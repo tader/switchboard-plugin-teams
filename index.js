@@ -5,6 +5,7 @@ import { TeamsBrowser, profilePath } from './lib/browser.js';
 import { SendLedger } from './lib/ledger.js';
 import { AdapterError } from './lib/errors.js';
 import { openapi } from './lib/openapi.js';
+import { recipientEmail, peopleQuery } from './lib/input.js';
 
 function integer(url, name, fallback, min, max) {
   const raw = url.searchParams.get(name);
@@ -14,7 +15,13 @@ function integer(url, name, fallback, min, max) {
   if (!Number.isInteger(value) || value < min || value > max) throw new AdapterError('invalid_query', `${name} must be between ${min} and ${max}.`, 400);
   return value;
 }
-async function body(request) {
+function boolean(url, name, fallback = false) {
+  const raw = url.searchParams.get(name);
+  if (raw === null) return fallback;
+  if (!['true', 'false'].includes(raw)) throw new AdapterError('invalid_query', `${name} must be true or false.`, 400);
+  return raw === 'true';
+}
+async function body(request, allowed = ['text', 'idempotencyKey']) {
   const chunks = [];
   let size = 0;
   for await (const chunk of request) {
@@ -26,7 +33,7 @@ async function body(request) {
   try { value = JSON.parse(Buffer.concat(chunks).toString()); }
   catch { throw new AdapterError('invalid_json', 'Body must be a JSON object.', 400); }
   if (!value || Array.isArray(value) || typeof value !== 'object') throw new AdapterError('invalid_json', 'Body must be a JSON object.', 400);
-  if (Object.keys(value).some(k => !['text', 'idempotencyKey'].includes(k))) throw new AdapterError('invalid_body', 'Only text and idempotencyKey are accepted.', 400);
+  if (Object.keys(value).some(k => !allowed.includes(k))) throw new AdapterError('invalid_body', `Only ${allowed.join(', ')} are accepted.`, 400);
   return value;
 }
 
@@ -72,7 +79,33 @@ export async function createAdapter(ctx, {
       if (request.method === 'GET' && url.pathname === '/status') operation = () => browser.dom('status');
       else if (request.method === 'POST' && url.pathname === '/login') operation = () => browser.login();
       else if (request.method === 'GET' && url.pathname === '/diagnostics') operation = () => browser.dom('diagnostics');
-      else if (request.method === 'GET' && url.pathname === '/chats') operation = () => browser.listChats();
+      else if (request.method === 'GET' && ['/chats', '/unread/chats'].includes(url.pathname)) {
+        const unreadOnly = url.pathname === '/unread/chats' || boolean(url, 'unreadOnly');
+        operation = () => browser.listChats(unreadOnly);
+      } else if (request.method === 'GET' && url.pathname === '/unread/messages') {
+        const maxChats = integer(url, 'maxChats', 3, 1, 5), limitPerChat = integer(url, 'limitPerChat', 50, 1, 100);
+        operation = () => browser.unreadMessages(maxChats, limitPerChat);
+      } else if (request.method === 'GET' && url.pathname === '/people') {
+        const query = peopleQuery(url.searchParams.get('query'));
+        operation = () => browser.searchPeople(query);
+      } else if (request.method === 'POST' && url.pathname === '/conversations') {
+        const input = await body(request, ['email', 'text', 'idempotencyKey']);
+        const email = recipientEmail(input.email);
+        if (input.text === undefined) {
+          if (input.idempotencyKey !== undefined) throw new AdapterError('invalid_body', 'idempotencyKey is only used with an initial text message.', 400);
+          operation = () => browser.conversation(email);
+        } else {
+          operation = () => new SendLedger(profilePath(ctx.dataDir, invocation.profile)).send(
+            input.idempotencyKey, `recipient:${email}`, input.text,
+            async () => {
+              const prepared = await browser.prepareRecipient(email);
+              if (response.destroyed) throw new AdapterError('client_disconnected', 'Caller disconnected before sending.', 499);
+              return prepared;
+            },
+            async prepared => ({ ...await browser.send(prepared, input.text), email, title: prepared.chat.title, chatId: browser.chatId(prepared.chat) }),
+          );
+        }
+      }
       else if (request.method === 'GET' && match) {
         const id = decodeURIComponent(match[1]);
         const limit = integer(url, 'limit', 50, 1, 200), olderPages = integer(url, 'olderPages', 0, 0, 5);
@@ -105,7 +138,7 @@ export async function createAdapter(ctx, {
   return {
     services: [{
       id: 'teams-web', name: 'Teams Web', icon: 'icon.svg',
-      description: 'Read and reply to chats in a dedicated local browser. No Graph API.',
+      description: 'Read chats and unread messages, find people, and start conversations in a dedicated browser. No Graph API.',
       // Stable logical URL: saved calls survive reloads. authorize rewrites it
       // to the current loopback adapter before any network request is made.
       baseUrl: 'http://teams.localhost', allowedHosts: ['teams.localhost', new URL(baseUrl).host], openapi,

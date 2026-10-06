@@ -11,7 +11,16 @@ async function fixture(t) {
   let handler;
   const instance = await createAdapter({ dataDir, settings: {} }, {
     createBrowser: dir => {
-      const browser = { serial: fn => fn(), login: async () => ({ opened: true }), dom: async action => ({ ready: true, action }), listChats: async () => ({ profile: dir }), close: async () => {} };
+      const browser = {
+        serial: fn => fn(), login: async () => ({ opened: true }), dom: async action => ({ ready: true, action }),
+        listChats: async unreadOnly => ({ profile: dir, unreadOnly }),
+        unreadMessages: async (maxChats, limitPerChat) => ({ maxChats, limitPerChat, mayMarkRead: true }),
+        searchPeople: async query => ({ query, items: [{ email: 'alice@example.com' }] }),
+        conversation: async email => ({ email, messageSent: false }),
+        prepareRecipient: async email => { browser.preparedCount = (browser.preparedCount ?? 0) + 1; return { chat: { title: 'Alice', key: { attribute: 'recipient', value: email } } }; },
+        send: async () => { browser.sentCount = (browser.sentCount ?? 0) + 1; return { status: 'observed_in_chat', message: { id: 'sent1' } }; },
+        chatId: () => 'person-chat-id', close: async () => {},
+      };
       profiles.set(dir, browser); return browser;
     },
     createServer: callback => {
@@ -76,4 +85,32 @@ test('revocation invalidates pending invocations', async t => {
   const out = f.request(conn, '/status');
   await f.auth.revoke(conn);
   assert.equal((await f.invoke(out)).status, 401);
+});
+
+test('unread and people operations validate bounds and route the requested filters', async t => {
+  const f = await fixture(t), conn = await f.connection();
+  assert.equal((await f.invoke(f.request(conn, '/unread/chats'))).body.unreadOnly, true);
+  assert.equal((await f.invoke(f.request(conn, '/chats?unreadOnly=false'))).body.unreadOnly, false);
+  assert.equal((await f.invoke(f.request(conn, '/chats?unreadOnly=maybe'))).status, 400);
+  assert.deepEqual((await f.invoke(f.request(conn, '/unread/messages?maxChats=2&limitPerChat=10'))).body, { maxChats: 2, limitPerChat: 10, mayMarkRead: true });
+  assert.equal((await f.invoke(f.request(conn, '/unread/messages?maxChats=6'))).status, 400);
+  assert.equal((await f.invoke(f.request(conn, '/people'))).status, 400);
+  assert.equal((await f.invoke(f.request(conn, '/people?query=Alice'))).body.query, 'Alice');
+});
+
+test('opening a conversation does not send; initial messages have durable recipient-bound retries', async t => {
+  const f = await fixture(t), conn = await f.connection();
+  const browser = [...f.profiles.values()][0];
+  const post = input => f.invoke(f.request(conn, '/conversations', 'POST'), { body: JSON.stringify(input) });
+  assert.deepEqual((await post({ email: 'Alice@Example.COM' })).body, { email: 'alice@example.com', messageSent: false });
+  assert.equal(browser.sentCount, undefined);
+  assert.equal((await post({ email: 'Alice Adams', text: 'Hi', idempotencyKey: 'person-send-1' })).status, 400);
+  assert.equal((await post({ email: 'alice@example.com', text: 'Hi' })).status, 400);
+  const first = await post({ email: 'alice@example.com', text: 'Hi', idempotencyKey: 'person-send-1' });
+  const retry = await post({ email: 'ALICE@EXAMPLE.COM', text: 'Hi', idempotencyKey: 'person-send-1' });
+  assert.equal(first.body.chatId, 'person-chat-id');
+  assert.equal(retry.body.replayed, true);
+  assert.equal(browser.sentCount, 1);
+  assert.equal(browser.preparedCount, 1);
+  assert.equal((await post({ email: 'bob@example.com', text: 'Hi', idempotencyKey: 'person-send-1' })).body.error.code, 'idempotency_conflict');
 });

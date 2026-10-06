@@ -10,7 +10,7 @@ export const fixtureHTML = `<!doctype html><html><body>
 <div data-tid="message-pane-list-viewport" style="height:150px;overflow:auto">
  <div data-tid="chat-pane-item"><span id="author-100">Alice</span><time id="timestamp-100" datetime="2026-10-07T10:00:00Z">10:00</time><div data-tid="chat-pane-message" data-mid="100"><div data-message-content>Hello Thomas</div></div></div>
 </div>
-<div data-tid="ckeditor" role="textbox" contenteditable="true" style="border:1px solid;padding:10px"></div>
+<div id="fixture-composer" data-tid="ckeditor" role="textbox" contenteditable="true" style="border:1px solid;padding:10px"></div>
 <button data-tid="sendMessageCommands-send" data-track-thread-id="thread-a" onclick="const editor=document.querySelector('[contenteditable]');const item=document.createElement('div');item.dataset.tid='chat-pane-item';const message=document.createElement('div');message.dataset.tid='chat-pane-message';message.dataset.mid=String(++window.messageCount);const content=document.createElement('div');content.setAttribute('data-message-content','');content.textContent=editor.innerText;message.append(content);item.append(message);document.querySelector('[data-tid=message-pane-list-viewport]').append(item);editor.textContent='';window.sentCount++">Send</button>
 <script>window.messageCount=100;window.sentCount=0;</script>
 </body></html>`;

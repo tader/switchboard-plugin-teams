@@ -1,9 +1,9 @@
 {
   "id": "teams-web",
   "name": "Teams Web",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "main": "index.js",
-  "description": "Read and reply to Teams chats through a persistent local browser, without Microsoft Graph.",
+  "description": "Read Teams chats and unread messages, find people, and start conversations through a local browser, without Microsoft Graph.",
   "icon": "icon.svg",
   "settings": [
     { "key": "browserPath", "label": "Chrome or Edge executable", "description": "Optional. On macOS, Chrome and Edge are detected automatically." },

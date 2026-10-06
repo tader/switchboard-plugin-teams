@@ -3,6 +3,7 @@ import assert from 'node:assert/strict';
 import { CDP, Page, findBrowser } from '../lib/cdp.js';
 import { teamsDOM, DEFAULT_SELECTORS } from '../lib/dom.js';
 import { fixtureHTML, runDOMSuite } from '../test/dom-suite.js';
+import { featuresFixtureHTML, runFeaturesDOMSuite } from '../test/features-dom-suite.js';
 import { createAdapter } from '../index.js';
 
 // Runs outside the Codex sandbox on the user's Mac. It sends only fixture
@@ -14,6 +15,7 @@ try {
   const page = await cdp.page('about:blank');
   assert.ok(page instanceof Page);
   console.log(await runDOMSuite(page, teamsDOM, DEFAULT_SELECTORS, fixtureHTML));
+  console.log(await runFeaturesDOMSuite(page, teamsDOM, DEFAULT_SELECTORS, featuresFixtureHTML));
   adapter = await createAdapter({ dataDir: directory + '/adapter', settings: {} }, {
     createBrowser: () => ({ serial: fn => fn(), login: async () => ({}), dom: async () => ({ ready: true }), close: async () => {} }),
   });

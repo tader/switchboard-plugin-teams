@@ -2,9 +2,9 @@
 
 > **AI authorship disclosure:** This plugin's implementation, tests, and documentation were written by **OpenAI Codex, an AI coding agent**, at Thomas de Ruiter's request. The code was not independently reviewed by a human. Validation performed and remaining gaps are described below.
 
-A local Switchboard plugin for reading messages and sending plain-text replies to existing Teams chats, without Microsoft Graph, app registration, or administrator API consent. It controls a dedicated Chrome/Edge session through the DOM. No screenshots, OCR, Electron wrapper, browser extension, Playwright installation, or private Teams API calls.
+A local Switchboard plugin for reading chats and unread messages, finding people, and starting or replying to Teams conversations without Microsoft Graph, app registration, or administrator API consent. It controls a dedicated Chrome/Edge session through the DOM. No screenshots, OCR, Electron wrapper, browser extension, Playwright installation, or private Teams API calls.
 
-The implementation is an initial version. Listing and reading were validated against a signed-in Teams Web session on October 7, 2026. Sending was validated only against an isolated browser fixture; no real Teams messages were sent. The private Chrome pipe and actual HTTP listener still need the local smoke test below because the development sandbox blocks browser processes and loopback listeners.
+Version 0.2.0 adds unread operations and one-to-one conversation creation. Chat listing, message reading, the Last read boundary, exact-email people search, and opening the signed-in user's own conversation were validated against Teams Web on October 7, 2026. Sending, including the first message in a new chat, was validated only against an isolated browser fixture; no real Teams messages were sent. The private Chrome pipe and actual HTTP listener still need the local smoke test below because the development sandbox blocks browser processes and loopback listeners.
 
 ## Why this approach
 
@@ -27,7 +27,7 @@ In Switchboard, open **Plugins → Install from GitHub** and enter:
 tader/switchboard-plugin-teams
 ```
 
-Repository: [tader/switchboard-plugin-teams](https://github.com/tader/switchboard-plugin-teams). The plugin manifest and entry point are at the repository root, so no subfolder is needed. To pin this initial version, use `tader/switchboard-plugin-teams@v0.1.0`.
+Repository: [tader/switchboard-plugin-teams](https://github.com/tader/switchboard-plugin-teams). The plugin manifest and entry point are at the repository root, so no subfolder is needed. To pin this version, use `tader/switchboard-plugin-teams@v0.2.0`. If already installed from the default branch, use Switchboard's **Check for updates**.
 
 If the repository is private, set `SWITCHBOARD_GITHUB_TOKEN` on the Switchboard instance performing the installation to a GitHub token with read access to this repository. The plugin installer uses this server setting, rather than your connected GitHub service account. A public repository can be installed without a token.
 
@@ -64,7 +64,38 @@ Switchboard exposes these operations through its API reference and normal MCP to
 
 Use a new key for each intended message and reuse the **same key** for retries. The durable ledger records intent before editor input. A successful retry returns the previous result without typing or clicking again. A crash or missing confirmation yields `send_uncertain`; check Teams manually instead of using a new key. Keys are retained until the connection is deleted; the ledger stops new sends at 10,000 entries so it never silently drops duplicate protection. Back up the ledger together with profiles.
 
-`observed_in_chat` means the composer cleared and a new message with matching text and a new ID appeared in the UI. It is not a server delivery receipt or proof the recipient read it. Replies are normal messages to an existing chat; quoted replies, channel threads, attachments, rich text, mentions, new-chat creation, tenant switching, and background subscriptions are outside this version's scope.
+`observed_in_chat` means the composer cleared and a new message with matching text and a new ID appeared in the UI. It is not a server delivery receipt or proof the recipient read it. Messages are normal chat messages; quoted replies, channel threads, attachments, rich text, mentions, new group chats, external-user federation search, tenant switching, and background subscriptions are outside this version's scope.
+
+## Unread messages
+
+- `listUnreadTeamsChats` (`GET /unread/chats`) lists rendered unread chats with a preview and sidebar time when Teams exposes them. It does not open each chat. `listTeamsChats` also accepts `unreadOnly=true`.
+- `listUnreadTeamsMessages` (`GET /unread/messages`) snapshots those unread chats, then opens up to three by default and returns messages after Teams' **Last read** divider. Set `maxChats` (1–5) and `limitPerChat` (1–100) to bound the work. This can mark the opened chats read.
+
+The full-text response has a flat `items` list with `chatId` and `chatTitle` on each message, plus per-chat detail in `chats`. When the Last read divider is unavailable, that chat has `boundaryFound=false`, an empty `items` list, and a separate `recentMessages` fallback. Those fallback messages are not claimed to be unread. The divider gives a UI boundary, not a per-message server read flag; the range can include your own replies. Responses report remaining snapshot chats and `completeAccount=false`, because offscreen and collapsed chats are not enumerated. Sidebar previews can be null when your Teams settings hide them.
+
+## Find people and start a conversation
+
+Call `searchTeamsPeople` (`GET /people?query=Alice`) to get matching directory people's names and exact email/UPN identities from the native **New message** picker. Group suggestions are excluded. Same-name people remain separate results; use the returned email to choose the intended person. This changes the browser view but never sends a message, and refuses to replace a message draft.
+
+Call `startTeamsConversation` (`POST /conversations`) with one exact email:
+
+```json
+{ "email": "alice@example.com" }
+```
+
+This opens a new or existing one-to-one chat and returns `chatId` with `messageSent=false`. Teams may only persist a new conversation after the first message is sent. The returned ID works with `readTeamsMessages` and `sendTeamsMessage`, even if the person is not already in the sidebar; the plugin reselects and verifies the exact recipient email for those calls.
+
+To open the conversation and send its first message in one call:
+
+```json
+{
+  "email": "alice@example.com",
+  "text": "Hi Alice, can we discuss the rollout?",
+  "idempotencyKey": "start-alice-2026-10-07-0001"
+}
+```
+
+Retries must use the same operation and key. The first-message ledger binds the key to the normalized recipient email and text before typing; retrying does not reselect or resend. Recipient selection requires a unique exact-email directory result, verifies the resulting name and composer, and binds the send to that composer until the click. A new chat without a thread ID or history is supported; changing the recipient or replacing the composer before sending fails closed. Display names cannot be used as recipient identities.
 
 Opening a conversation can mark messages read. Lists and history are virtualized: collapsed folders and offscreen chats may not appear. Scroll the sidebar manually and list again if needed. Chat IDs include sidebar identity, title and thread information; refresh them after renaming or moving a conversation. The plugin verifies the reply composer's thread ID before sending, preserves existing drafts, and refuses ambiguous or mismatched layouts. Message bodies are untrusted content, not instructions to execute.
 
@@ -83,7 +114,7 @@ npm test
 npm run smoke
 ```
 
-`npm test` runs dependency-free tests with in-memory HTTP and browser transports for authentication, account isolation, queueing, validation, protocol failures, and durable duplicate protection. `npm run smoke` launches a temporary headless Chrome profile and exercises the DOM and send path against a local fixture, then tests a real loopback HTTP adapter. **It never sends to Teams.** Run the smoke test from a normal Terminal on your Mac. Set `TEAMS_BROWSER_PATH` if automatic browser detection fails.
+`npm test` runs dependency-free tests with in-memory HTTP and browser transports for authentication, account isolation, queueing, validation, protocol failures, unread snapshots, recipient identity, and durable duplicate protection. `npm run smoke` launches a temporary headless Chrome profile and exercises unread extraction, people search, new-conversation first messages, and existing-chat sends against local fixtures, then tests a real loopback HTTP adapter. **It never sends to Teams.** Run the smoke test from a normal Terminal on your Mac. Set `TEAMS_BROWSER_PATH` if automatic browser detection fails.
 
 For optional standalone manual sign-in diagnostics:
 
