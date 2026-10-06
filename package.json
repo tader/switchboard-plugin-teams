@@ -1,0 +1,12 @@
+{
+  "name": "switchboard-plugin-teams",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "engines": { "node": ">=24" },
+  "scripts": {
+    "test": "node --test test/*.test.js",
+    "smoke": "node scripts/smoke.js",
+    "signin": "node scripts/signin.js"
+  }
+}

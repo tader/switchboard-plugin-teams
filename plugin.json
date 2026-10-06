@@ -1,0 +1,12 @@
+{
+  "id": "teams-web",
+  "name": "Teams Web",
+  "version": "0.1.0",
+  "main": "index.js",
+  "description": "Read and reply to Teams chats through a persistent local browser, without Microsoft Graph.",
+  "icon": "icon.svg",
+  "settings": [
+    { "key": "browserPath", "label": "Chrome or Edge executable", "description": "Optional. On macOS, Chrome and Edge are detected automatically." },
+    { "key": "selectors", "label": "DOM selector overrides (JSON)", "type": "textarea", "advanced": true, "description": "Override selectors if your Teams rollout uses a different DOM. See the plugin guide." }
+  ]
+}
