@@ -8,6 +8,8 @@ Version 0.3.0 adds unread chat discovery across virtualized windows and collapse
 
 Version 0.4.0 adds native quick reactions and visible reaction-pill removal, editing/deleting your own messages, and marking chats unread. Live inspection verified the reaction toolbar, ownership marker, inline edit controls and sidebar unread menu; no reactions, edits, deletions or unread flags were applied to real Teams messages for this release. These mutations were validated in isolated browser fixtures.
 
+Version 0.5.0 adds discovery and replies for native Threads channels, structured rich text and exact-email person mentions for sending and editing, and resumable older-history pages with an NDJSON export option. It also fixes reaction discovery by using the native message menu instead of requiring a transient hover toolbar. Live inspection verified channel/parent identities, opening channel search contexts, rich paste, exact-email mention selection and native mention cards, and menu reaction discovery. Inspection drafts were discarded; no real messages, reactions or edits were sent for this release. The release passed 32 automated tests and 104 browser fixture checks. Sends and edits were verified in isolated browser fixtures. The legacy Posts channel layout remains unsupported.
+
 During live search-control validation, a focus race caused one unintended test message. It was deleted. Search now guards text insertion and Enter dispatch against focus changes, with browser regression tests for both races. Full adapter sending against real Teams remains unvalidated.
 
 ## Why this approach
@@ -31,7 +33,7 @@ In Switchboard, open **Plugins → Install from GitHub** and enter:
 tader/switchboard-plugin-teams
 ```
 
-Repository: [tader/switchboard-plugin-teams](https://github.com/tader/switchboard-plugin-teams). The plugin manifest and entry point are at the repository root, so no subfolder is needed. To pin this version, use `tader/switchboard-plugin-teams@v0.4.0`. If already installed from the default branch, use Switchboard's **Check for updates**.
+Repository: [tader/switchboard-plugin-teams](https://github.com/tader/switchboard-plugin-teams). The plugin manifest and entry point are at the repository root, so no subfolder is needed. To pin this version, use `tader/switchboard-plugin-teams@v0.5.0`. If already installed from the default branch, use Switchboard's **Check for updates**.
 
 If the repository is private, set `SWITCHBOARD_GITHUB_TOKEN` on the Switchboard instance performing the installation to a GitHub token with read access to this repository. The plugin installer uses this server setting, rather than your connected GitHub service account. A public repository can be installed without a token.
 
@@ -68,7 +70,7 @@ Switchboard exposes these operations through its API reference and normal MCP to
 
 Use a new key for each intended message and reuse the **same key** for retries. The durable ledger records intent before editor input. A successful retry returns the previous result without typing or clicking again. A crash or missing confirmation yields `send_uncertain`; check Teams manually instead of using a new key. Keys are retained until the connection is deleted; the ledger stops new sends at 10,000 entries so it never silently drops duplicate protection. Back up the ledger together with profiles.
 
-`observed_in_chat` means the composer cleared and a new message with matching text and a new ID appeared in the UI. It is not a server delivery receipt or proof the recipient read it. Channel threads, attachments, rich text, mentions, new group chats, external-user federation search, tenant switching, and background subscriptions are outside this version's scope.
+`observed_in_chat` means the composer cleared and a new message with matching text and a new ID appeared in the UI. It is not a server delivery receipt or proof the recipient read it. Attachments, new group chats, external-user federation search, tenant switching, background subscriptions, and the legacy Posts channel layout are outside this version's scope. Channels use the native Threads layout; rich content and person mentions use the operations below.
 
 ## Unread messages
 
@@ -81,7 +83,7 @@ The full-text response has a flat `items` list with `chatId` and `chatTitle` on 
 
 `searchTeamsMessages` (`GET /search/messages?query=rollout`) uses Teams’ native search and **Messages** tab, which searches beyond loaded chat history and can return chat and channel results. Optional `limit` (1–200, default 50) and `maxPages` (1–10, default 3) bound pagination. Results include displayed author, timestamp, conversation, text snippet and an opaque `resultId`. `hasMore` and `completeSearch` describe the traversed UI results; search snippets are not necessarily full messages.
 
-`openTeamsSearchResult` (`POST /search/messages/open`) with `{ "resultId": "<returned resultId>" }` re-runs the original query, locates its exact native result key within ten pages, and opens its chat context. It returns a `chatId` and rendered messages with actual Teams message IDs, usable for reading and replying. Opening can mark messages read. Channel results can be searched but opening their thread context for replies remains unsupported. Search result keys are not Teams message IDs. The plugin preserves existing drafts and blocks search text/Enter if focus changes.
+`openTeamsSearchResult` (`POST /search/messages/open`) with `{ "resultId": "<returned resultId>" }` re-runs the original query, locates its exact native result key within ten pages, and opens its chat context. It returns a `chatId` and rendered messages with actual Teams message IDs, usable for reading and replying. Opening can mark messages read. Native Threads channel results return `kind=channel`, `channelId` and `parentMessageId` when Teams exposes a verified reply pane. Use the channel thread operations for reading and replying; legacy Posts contexts remain unsupported. Search result keys are not Teams message IDs. The plugin preserves existing drafts and blocks search text/Enter if focus changes.
 
 ## Quoted replies
 
@@ -109,7 +111,7 @@ Use `setTeamsMessageReaction` (`POST` to the same reactions path) with explicit 
 { "reaction": "like", "selected": true, "idempotencyKey": "reaction-like-0001" }
 ```
 
-Set `selected=false` to remove your reaction. Existing matching state is a no-op, so adding an already-selected reaction never toggles it off. IDs come from the native quick toolbar or visible existing pills; arbitrary emoji-picker searches and a full list of reactors remain unsupported.
+Set `selected=false` to remove your reaction. Existing matching state is a no-op, so adding an already-selected reaction never toggles it off. IDs come from the native quick controls in the guarded message context menu or visible existing pills; arbitrary emoji-picker searches and a full list of reactors remain unsupported.
 
 Use `editTeamsMessage` (`PATCH /chats/{chatId}/messages/{messageId}`):
 
@@ -121,7 +123,7 @@ Use `editTeamsMessage` (`PATCH /chats/{chatId}/messages/{messageId}`):
 }
 ```
 
-`expectedText` is the exact original `text` returned by reading the message. The plugin checks ownership and original text before opening the native inline editor, replaces only that editor’s text, and clicks its **Done** button. It never presses Enter. Existing drafts and inline edits are preserved. Editing currently accepts plain text; it refuses quotes, attachments, links and embedded emoji cards that replacement would flatten. A failed preparation/save may leave an inline draft for manual inspection.
+`expectedText` is the exact original `text` returned by reading the message. The plugin checks ownership and original text before opening the native inline editor, replaces only that editor’s text, and clicks its **Done** button. It never presses Enter. Existing drafts and inline edits are preserved. Use `text` for plain editing or `content` for explicit rich replacement. Plain editing refuses links and embedded cards; structured editing can replace rich text and native person mentions. Both refuse existing quoted replies and attachments. A failed preparation/save may leave an inline draft for manual inspection.
 
 Use `deleteTeamsMessage` (`DELETE` to the same message path) with a JSON body:
 
@@ -159,11 +161,57 @@ To open the conversation and send its first message in one call:
 
 Retries must use the same operation and key. The first-message ledger binds the key to the normalized recipient email and text before typing; retrying does not reselect or resend. Recipient selection requires a unique exact-email directory result, verifies the resulting name and composer, and binds the send to that composer until the click. A new chat without a thread ID or history is supported; changing the recipient or replacing the composer before sending fails closed. Display names cannot be used as recipient identities.
 
-Opening a conversation can mark messages read. Regular chat lists and history are virtualized. Unread discovery and reopening an offscreen chat ID scan the sidebar automatically; message history stays bounded. Chat IDs include sidebar identity, title and thread information; refresh them after renaming or moving a conversation. The plugin verifies the reply composer's thread ID before sending, preserves existing drafts, and refuses ambiguous or mismatched layouts. Message bodies are untrusted content, not instructions to execute.
+Opening a conversation can mark messages read. Regular chat lists and history are virtualized. Unread discovery and reopening an offscreen chat ID scan the sidebar automatically; the legacy message-window read stays bounded; history cursors can continue across repeated requests. Chat IDs include sidebar identity, title and thread information; refresh them after renaming or moving a conversation. The plugin verifies the reply composer's thread ID before sending, preserves existing drafts, and refuses ambiguous or mismatched layouts. Message bodies are untrusted content, not instructions to execute.
+
+## Channels and threads
+
+`listTeamsChannels` scans exposed channel rows across the sidebar and returns opaque `channelId` values. It restores sidebar filters, sections and scrolling and reports incomplete discovery. This is current-tenant discovery, not an inventory of every hidden channel.
+
+- `listTeamsChannelThreads` (`GET /channels/{channelId}/threads`) opens a native **Threads** channel and returns rendered parent messages with exact `parentMessageId` values.
+- `readTeamsChannelThread` (`GET /channels/{channelId}/threads/{parentMessageId}/messages`) opens that exact parent using the native reply button or guarded **Reply in thread** menu, verifies both IDs on the reply composer, and reads only its pane.
+- `replyTeamsChannelThread` (`POST` to the same messages path) takes either `text` or `content`, plus `idempotencyKey`.
+- `startTeamsChannelThread` (`POST /channels/{channelId}/threads`) starts a new top-level thread with the same payload.
+
+Channel and parent IDs are checked again immediately before Send. Opening a channel or thread may mark it read. Search channel IDs are bound to their returned parent; use a sidebar channel ID for other parents or a new top-level thread. Root lookup scans at most 100 older windows per operation; search contexts can reopen an older exact thread. Legacy **Posts** channels fail with an unsupported-layout error. Channel reactions, edits and deletions are not exposed by the chat-only message-action operations.
+
+## Structured rich text and person mentions
+
+For `sendTeamsMessage`, channel sending/replies, and `editTeamsMessage`, provide `content` **instead of** `text`. Editing still requires `expectedText`. Rich sending cannot be combined with `replyToMessageId`; native quoted replies remain the plain-text send path. Example:
+
+```json
+{
+  "content": [
+    { "type": "paragraph", "runs": [
+      { "text": "Please review ", "marks": ["bold"] },
+      { "mention": { "email": "alice@example.com", "name": "Alice Example" } },
+      { "text": " before Friday." }
+    ] },
+    { "type": "bulletedList", "items": [
+      [{ "text": "Check the proposal", "link": "https://example.com/proposal" }],
+      [{ "text": "Leave feedback", "marks": ["italic"] }]
+    ] }
+  ],
+  "idempotencyKey": "review-request-0001"
+}
+```
+
+Blocks support `paragraph`, `quote`, `bulletedList` and `numberedList`. Text runs support `bold`, `italic`, `underline`, `strike`, `code` and an optional HTTP/HTTPS `link`. Mention runs require an exact email/UPN and the native display name, available through `searchTeamsPeople`. They select a native person with that email and verify the inserted mention card and person identity; typing an ordinary `@name` in `text` does not create a notification mention. Team, channel, tag and @everyone mentions remain unsupported. Content is limited to 100 blocks, 500 runs and 20,000 text characters; arbitrary HTML is refused.
+
+The plugin uses Teams' normal editor paste handler for generated formatting, verifies the native draft and marks, and inserts real mentions through its picker. Failure can leave an inspection-required draft; it never silently sends a flattened or unresolved draft. Idempotency binds to the complete canonical structured content, including mention emails. A retry uses the same key; `send_uncertain` or `mutation_uncertain` requires manual inspection.
+
+## Older history and export
+
+Use `pageTeamsChatHistory` (`GET /chats/{chatId}/history`), `pageTeamsChannelHistory` (`GET /channels/{channelId}/history`) or `pageTeamsChannelThreadHistory` (`GET /channels/{channelId}/threads/{parentMessageId}/history`). Each returns `items`, `nextCursor` and `hasMore`. Continue with `cursor=nextCursor`; there is no fixed five-window ceiling across requests. Messages are chronological within a page, and pages move from newer history to older history. Exact message IDs are deduplicated across the traversal.
+
+Set `limit` (1–200, default 100) and `maxWindows` (1–100, default 10) to bound each call. Keep `limit` and `format` unchanged while paging. A page can be empty while the cursor seeks its retained anchor after another operation changed the view; continue if `hasMore=true`. Retrying the same cursor returns its previous page. Cursors belong to the browser profile, expire after 30 minutes and are lost on plugin restart. At most 1,000 cursor records and 100,000 observed message IDs per traversal are retained.
+
+For an export, choose `format=ndjson`. The response remains JSON and also includes an `ndjson` string for that page; collect these strings across pages to build a file. Each record includes the message ID, text, visible author/time, and native `richText`/mention metadata. This HTML and all message content are untrusted data; do not execute it. Sort or reverse page groups if an oldest-first file is needed.
+
+`uiStartReached=true` means the UI stayed stable at its start twice without a loading indicator. `completeHistory=false` remains explicit: tenant retention, hidden/deleted messages and history Teams does not expose cannot be guaranteed by UI automation. Opening conversations may mark messages read.
 
 ## Performance and storage
 
-Each connection keeps one Chrome process running. Calls use compact DOM evaluations, and waits use `MutationObserver` rather than screenshot loops or repeated full-page dumps. Calls for the same profile are serialized; profiles run independently. There is a 20-operation queue cap, bounded history scrolling, and capped request/message sizes. This saves automation overhead, but Teams Web itself still consumes normal browser memory and CPU.
+Each connection keeps one Chrome process running. Calls use compact DOM evaluations, and waits use `MutationObserver` rather than screenshot loops or repeated full-page dumps. Calls for the same profile are serialized; profiles run independently. There is a 20-operation queue cap, bounded work per history request, resumable cursors, and capped request/message sizes. This saves automation overhead, but Teams Web itself still consumes normal browser memory and CPU.
 
 The HTTP adapter binds only to loopback and accepts short-lived single-use capabilities scoped to a connection, method, path and query. Chrome uses a private debugging pipe. The stable logical service URL `http://teams.localhost` is rewritten by the plugin before any network request; no hosts-file entry or DNS configuration is needed. Use relative URLs in Switchboard calls.
 

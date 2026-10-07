@@ -22,6 +22,7 @@ function initializeActionsFixture() {
     reactionSummary(mid, root);
     const button = document.getElementById(mid + '-popover-surface')?.querySelector('[data-tid="message-actions-' + reaction + '"]');
     button?.setAttribute('aria-pressed', String(states[mid][reaction]));
+    document.querySelector('[data-tid="message-reactions-on-menu"] [data-tid="message-actions-' + reaction + '"]')?.setAttribute('aria-pressed', String(states[mid][reaction]));
   };
   const toolbar = (mid, root) => {
     document.querySelector('[data-tid="message-actions-container"]')?.remove();
@@ -40,6 +41,9 @@ function initializeActionsFixture() {
     node.addEventListener('contextmenu', event => {
       event.preventDefault(); document.querySelector('[data-tid="message-actions-menu-renderer-getV9MessageActions"]')?.remove();
       const menu = document.createElement('div'); menu.dataset.tid = 'message-actions-menu-renderer-getV9MessageActions'; menu.setAttribute('role', 'menu');
+      toolbar(mid, wrapper);
+      const bar = document.querySelector('[data-tid="message-reactions-toolbar"]'); bar.dataset.tid = 'message-reactions-on-menu'; menu.append(bar);
+      document.querySelector('[data-tid="message-actions-container"]')?.remove();
       if (owned) {
         const edit = document.createElement('button'); edit.dataset.tid = 'message-actions-edit'; edit.textContent = 'Edit';
         edit.onclick = () => {
@@ -48,7 +52,7 @@ function initializeActionsFixture() {
           const container = wrapper.querySelector('.fui-ChatMyMessage');
           const editor = document.createElement('div'); editor.dataset.tid = 'ckeditor'; editor.contentEditable = 'true'; editor.textContent = original; editor.id = 'edit-message-' + mid; container.append(editor);
           const done = document.createElement('button'); done.dataset.tid = 'newMessageCommands-send'; done.textContent = 'Done'; done.setAttribute('data-track-thread-id', 'thread-a');
-          done.onclick = () => { originalClone.querySelector('[data-message-content]').textContent = editor.innerText; editor.remove(); done.remove(); container.append(originalClone); attachMessage(originalClone); window.actionCounts.edit++; };
+          done.onclick = () => { originalClone.querySelector('[data-message-content]').innerHTML = editor.innerHTML; editor.remove(); done.remove(); container.append(originalClone); attachMessage(originalClone); window.actionCounts.edit++; };
           container.append(done);
         };
         const remove = document.createElement('button'); remove.dataset.tid = 'message-actions-delete'; remove.textContent = 'Delete';
@@ -80,6 +84,13 @@ export async function runActionsDOMSuite(page, dom, selectors, html) {
   };
   await reset();
   const reaction = args('reaction', '100', { reaction: 'like', selected: true });
+  const menuPoint = await run('messageTarget', reaction);
+  for (const type of ['mousePressed', 'mouseReleased']) await page.call('Input.dispatchMouseEvent', { type, ...menuPoint, button: 'right', clickCount: 1 });
+  const menuCatalog = await run('reactionReady', reaction);
+  check(menuCatalog.available.length === 2 && await page.evaluate(() => !document.querySelector('[data-tid="message-reactions-toolbar"]')), 'discovers reactions from the native menu without a hover toolbar');
+  await run('reactionPrepare', reaction);
+  check((await run('reactionCommit', reaction)).selected, 'adds a quick reaction through its guarded native message menu');
+  await run('release', reaction); await reset();
   const point = await run('messageTarget', reaction);
   await page.call('Input.dispatchMouseEvent', { type: 'mouseMoved', ...point });
   const catalog = await run('reactionReady', reaction);

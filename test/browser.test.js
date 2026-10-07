@@ -126,3 +126,16 @@ test('marking a rendered chat unread does not open it; edit input uses only the 
   await browser.executeMessageAction({ args: { kind: 'edit', text: 'Changed' } });
   assert.deepEqual(calls, ['action:editSelect', 'Input.insertText', 'action:editCommit']);
 });
+
+test('channel search IDs stay bound to their verified parent and cannot silently become a top-level post', async () => {
+  const browser = new TeamsBrowser('/tmp/channel-search');
+  const context = { kind: 'channel', title: 'Example', threadId: 'channel@thread.tacv2', parentMessageId: 'root', key: { attribute: 'search', value: JSON.stringify({ query: 'find', resultKey: 'serp-message-card-content-fixture' }) } };
+  const id = browser.chatId(context); let opened = 0;
+  browser.openSearch = async () => { opened++; return context; };
+  assert.deepEqual(await browser.openChannel(id, 'root'), context);
+  await assert.rejects(browser.openChannel(id, null), { code: 'invalid_channel' });
+  await assert.rejects(browser.openChannel(id, 'different-root'), { code: 'invalid_channel' });
+  assert.equal(opened, 1);
+  browser.openSearch = async () => ({ ...context, parentMessageId: 'different-root' });
+  await assert.rejects(browser.openChannel(id, 'root'), { code: 'channel_changed' });
+});

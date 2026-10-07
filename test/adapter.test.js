@@ -22,6 +22,12 @@ async function fixture(t) {
         prepareQuote: async (id, replyToMessageId) => ({ chat: { title: id }, replyToMessageId }),
         searchMessages: async (query, limit, maxPages) => ({ query, limit, maxPages }),
         listChats: async unreadOnly => ({ profile: dir, unreadOnly }),
+        channels: async maxWindows => ({ maxWindows, items: [] }),
+        channelThreads: async id => ({ channelId: id }),
+        threadMessages: async (id, parent) => ({ channelId: id, parentMessageId: parent }),
+        history: async (id, options) => ({ conversationId: id, ...options }),
+        prepareContent: async (id, content, parent) => { browser.richPrepared = (browser.richPrepared ?? 0) + 1; return { args: { id, parent }, content }; },
+        sendContent: async prepared => { browser.richSent = (browser.richSent ?? 0) + 1; return { status: 'observed_in_ui', ...prepared.args }; },
         unreadMessages: async (maxChats, limitPerChat) => ({ maxChats, limitPerChat, mayMarkRead: true }),
         searchPeople: async query => ({ query, items: [{ email: 'alice@example.com' }] }),
         conversation: async email => ({ email, messageSent: false }),
@@ -72,6 +78,29 @@ test('single-use invocation tokens bind account, method, path and query', async 
   assert.equal((await f.invoke(f.request(conn, '/status'), { pathname: '/chats' })).status, 403);
   assert.equal((await f.invoke(f.request(conn, '/status?a=1'), { pathname: '/status?a=2' })).status, 403);
   assert.equal((await f.invoke(f.request(conn, '/status'), { method: 'POST' })).status, 403);
+});
+
+test('channel threads, history and structured sends validate inputs and preserve content-bound retries', async t => {
+  const f = await fixture(t), conn = await f.connection();
+  assert.equal((await f.invoke(f.request(conn, '/channels?maxWindows=7'))).body.maxWindows, 7);
+  assert.equal((await f.invoke(f.request(conn, '/channels/channel-id/threads/root/messages'))).body.parentMessageId, 'root');
+  const page = await f.invoke(f.request(conn, '/chats/chat-id/history?limit=17&maxWindows=8&format=ndjson'));
+  assert.equal(page.body.limit, 17); assert.equal(page.body.format, 'ndjson');
+  assert.equal((await f.invoke(f.request(conn, '/chats/chat-id/history?format=html'))).status, 400);
+  assert.equal((await f.invoke(f.request(conn, '/chats/chat-id/history?cursor=forged'))).status, 400);
+  const content = [{ type: 'paragraph', runs: [{ text: 'Hi ', marks: ['bold'] }, { mention: { email: 'alice@example.com', name: 'Alice' } }] }];
+  const payload = { content, idempotencyKey: 'rich-channel-0001' };
+  const send = data => f.invoke(f.request(conn, '/channels/channel-id/threads/root/messages', 'POST'), { body: JSON.stringify(data) });
+  assert.equal((await send(payload)).status, 200); assert.equal((await send(payload)).body.replayed, true);
+  assert.equal((await send({ ...payload, content: [{ type: 'paragraph', runs: [{ text: 'Changed' }] }] })).status, 409);
+  assert.equal((await send({ ...payload, text: 'Also text' })).status, 400);
+  const browser = [...f.profiles.values()][0]; assert.equal(browser.richPrepared, 1); assert.equal(browser.richSent, 1);
+  const chatSend = data => f.invoke(f.request(conn, '/chats/chat-id/messages', 'POST'), { body: JSON.stringify(data) });
+  assert.equal((await chatSend({ content, idempotencyKey: 'rich-chat-0001' })).status, 200);
+  assert.equal((await chatSend({ content, replyToMessageId: 'root', idempotencyKey: 'rich-chat-0002' })).status, 400);
+  const edit = data => f.invoke(f.request(conn, '/chats/chat-id/messages/own-message', 'PATCH'), { body: JSON.stringify(data) });
+  assert.equal((await edit({ content, expectedText: 'Original', idempotencyKey: 'rich-edit-0001' })).status, 200);
+  assert.equal((await edit({ content, text: 'Also text', expectedText: 'Original', idempotencyKey: 'rich-edit-0002' })).status, 400);
 });
 
 test('connections have separate profiles and malformed requests fail before browser', async t => {

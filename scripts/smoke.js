@@ -8,6 +8,8 @@ import { fixtureHTML, runDOMSuite } from '../test/dom-suite.js';
 import { featuresFixtureHTML, runFeaturesDOMSuite } from '../test/features-dom-suite.js';
 import { discoveryFixtureHTML, runDiscoveryDOMSuite } from '../test/discovery-dom-suite.js';
 import { quotesFixtureHTML, runQuotesDOMSuite } from '../test/quotes-dom-suite.js';
+import { teamsExtended } from '../lib/extended-dom.js';
+import { extendedFixtureHTML, runExtendedDOMSuite, runRichEditDOMSuite, runChannelSearchDOMSuite } from '../test/extended-dom-suite.js';
 import { createAdapter } from '../index.js';
 
 // Runs outside the Codex sandbox on the user's Mac. It sends only fixture
@@ -23,6 +25,9 @@ try {
   console.log(await runDiscoveryDOMSuite(page, teamsDOM, DEFAULT_SELECTORS, discoveryFixtureHTML));
   console.log(await runQuotesDOMSuite(page, teamsDOM, DEFAULT_SELECTORS, quotesFixtureHTML));
   console.log(await runActionsDOMSuite(page, teamsActions, DEFAULT_SELECTORS, actionsFixtureHTML));
+  console.log(await runExtendedDOMSuite(page, teamsExtended, DEFAULT_SELECTORS, extendedFixtureHTML));
+  console.log(await runRichEditDOMSuite(page, teamsExtended, teamsActions, DEFAULT_SELECTORS, actionsFixtureHTML));
+  console.log(await runChannelSearchDOMSuite(page, teamsDOM, teamsExtended, DEFAULT_SELECTORS, extendedFixtureHTML));
   adapter = await createAdapter({ dataDir: directory + '/adapter', settings: {} }, {
     createBrowser: () => ({ serial: fn => fn(), login: async () => ({}), dom: async () => ({ ready: true }), close: async () => {} }),
   });

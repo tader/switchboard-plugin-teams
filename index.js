@@ -6,6 +6,7 @@ import { SendLedger } from './lib/ledger.js';
 import { AdapterError } from './lib/errors.js';
 import { openapi } from './lib/openapi.js';
 import { recipientEmail, peopleQuery, messageQuery, messageId, messageText, reactionInput } from './lib/input.js';
+import { richContent } from './lib/content.js';
 
 function integer(url, name, fallback, min, max) {
   const raw = url.searchParams.get(name);
@@ -77,10 +78,32 @@ export async function createAdapter(ctx, {
       const messageMatch = url.pathname.match(/^\/chats\/([^/]+)\/messages\/([^/]+)(\/reactions)?$/);
       const unreadMatch = url.pathname.match(/^\/chats\/([^/]+)\/unread$/);
       const match = url.pathname.match(/^\/chats\/([^/]+)\/messages$/);
+      const channelMatch = url.pathname.match(/^\/channels\/([^/]+)\/threads(?:\/([^/]+)\/messages)?$/);
+      const historyMatch = url.pathname.match(/^\/(chats|channels)\/([^/]+)(?:\/threads\/([^/]+))?\/history$/);
       let operation;
       if (request.method === 'GET' && url.pathname === '/status') operation = () => browser.dom('status');
       else if (request.method === 'POST' && url.pathname === '/login') operation = () => browser.login();
       else if (request.method === 'GET' && url.pathname === '/diagnostics') operation = () => browser.dom('diagnostics');
+      else if (request.method === 'GET' && url.pathname === '/channels') {
+        const maxWindows = integer(url, 'maxWindows', 100, 2, 200); operation = () => browser.channels(maxWindows);
+      } else if (historyMatch && request.method === 'GET') {
+        const id = decodeURIComponent(historyMatch[2]), parent = historyMatch[3] ? messageId(decodeURIComponent(historyMatch[3])) : undefined;
+        const limit = integer(url, 'limit', 100, 1, 200), maxWindows = integer(url, 'maxWindows', 10, 1, 100), cursor = url.searchParams.get('cursor') ?? undefined, format = url.searchParams.get('format') ?? 'json';
+        if (!['json', 'ndjson'].includes(format) || cursor && !/^[a-f0-9-]{36}$/.test(cursor) || parent && historyMatch[1] !== 'channels') throw new AdapterError('invalid_query', 'Use json or ndjson format and a returned history cursor.', 400);
+        operation = () => browser.history(parent ? browser.chatId({ ...browser.decodeChannel(id), parentMessageId: parent }) : id, { limit, maxWindows, cursor, format });
+      } else if (channelMatch) {
+        const id = decodeURIComponent(channelMatch[1]), parent = channelMatch[2] ? messageId(decodeURIComponent(channelMatch[2])) : undefined;
+        if (request.method === 'GET') operation = () => parent ? browser.threadMessages(id, parent) : browser.channelThreads(id);
+        else if (request.method === 'POST') {
+          const input = await body(request, ['text', 'content', 'idempotencyKey']);
+          if ((input.text === undefined) === (input.content === undefined)) throw new AdapterError('invalid_body', 'Provide exactly one of text or content.', 400);
+          const content = input.content === undefined ? richContent([{ type: 'paragraph', runs: [{ text: messageText(input.text) }] }]) : richContent(input.content);
+          const checkCancelled = () => { if (response.destroyed) throw new AdapterError('client_disconnected', 'Caller disconnected before sending.', 499); };
+          operation = () => new SendLedger(profilePath(ctx.dataDir, invocation.profile)).sendContent(input.idempotencyKey, ['channel', id, parent ?? null], content,
+            async () => { const prepared = await browser.prepareContent(id, content, parent ?? null); if (response.destroyed) { await prepared.cleanup?.(); checkCancelled(); } return prepared; },
+            prepared => browser.sendContent(prepared, checkCancelled));
+        } else throw new AdapterError('not_found', 'Unknown channel operation.', 404);
+      }
       else if (request.method === 'GET' && ['/chats', '/unread/chats'].includes(url.pathname)) {
         const unreadOnly = url.pathname === '/unread/chats' || boolean(url, 'unreadOnly');
         const maxWindows = integer(url, 'maxWindows', 100, 2, 200);
@@ -127,8 +150,9 @@ export async function createAdapter(ctx, {
           } else if (request.method === 'POST' && messageMatch?.[3]) {
             kind = 'reaction'; input = await body(request, ['reaction', 'selected', 'idempotencyKey']); payload = reactionInput(input.reaction, input.selected);
           } else if (request.method === 'PATCH' && messageMatch && !messageMatch[3]) {
-            kind = 'edit'; input = await body(request, ['text', 'expectedText', 'idempotencyKey']);
-            payload = { expectedText: messageText(input.expectedText, 'expectedText', true), text: messageText(input.text) };
+            kind = 'edit'; input = await body(request, ['text', 'content', 'expectedText', 'idempotencyKey']);
+            if ((input.text === undefined) === (input.content === undefined)) throw new AdapterError('invalid_body', 'Provide exactly one of text or content.', 400);
+            payload = { expectedText: messageText(input.expectedText, 'expectedText', true), ...(input.content === undefined ? { text: messageText(input.text) } : { content: richContent(input.content) }) };
           } else if (request.method === 'DELETE' && messageMatch && !messageMatch[3]) {
             kind = 'delete'; input = await body(request, ['expectedText', 'idempotencyKey']); payload = { expectedText: messageText(input.expectedText, 'expectedText', true) };
           } else throw new AdapterError('not_found', 'Unknown message operation.', 404);
@@ -150,8 +174,16 @@ export async function createAdapter(ctx, {
         operation = () => browser.messages(id, limit, olderPages);
       } else if (request.method === 'POST' && match) {
         const id = decodeURIComponent(match[1]);
-        const input = await body(request, ['text', 'idempotencyKey', 'replyToMessageId']);
+        const input = await body(request, ['text', 'content', 'idempotencyKey', 'replyToMessageId']);
         const replyToMessageId = input.replyToMessageId === undefined ? undefined : messageId(input.replyToMessageId);
+        if (input.content !== undefined) {
+          if (input.text !== undefined || replyToMessageId !== undefined) throw new AdapterError('invalid_body', 'Structured content is an alternative to text; quoted rich sends are not supported.', 400);
+          const content = richContent(input.content);
+          const checkCancelled = () => { if (response.destroyed) throw new AdapterError('client_disconnected', 'Caller disconnected before sending.', 499); };
+          operation = () => new SendLedger(profilePath(ctx.dataDir, invocation.profile)).sendContent(input.idempotencyKey, ['chat', id], content,
+            async () => { const prepared = await browser.prepareContent(id, content); if (response.destroyed) { await prepared.cleanup?.(); checkCancelled(); } return prepared; },
+            prepared => browser.sendContent(prepared, checkCancelled));
+        } else {
         operation = () => new SendLedger(profilePath(ctx.dataDir, invocation.profile)).send(
           input.idempotencyKey, replyToMessageId ? JSON.stringify([id, replyToMessageId]) : id, input.text,
           async () => {
@@ -161,6 +193,7 @@ export async function createAdapter(ctx, {
           },
           prepared => browser.send(prepared, input.text),
         );
+        }
       } else throw new AdapterError('not_found', 'Unknown operation.', 404);
       respond(response, 200, await browser.serial(() => {
         if (response.destroyed) throw new AdapterError('client_disconnected', 'Caller disconnected before execution.', 499);
