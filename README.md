@@ -1,243 +1,85 @@
-# Teams Web for Switchboard
+# Teams API plugin for Switchboard
 
-> **AI authorship disclosure:** This plugin's implementation, tests, and documentation were written by **OpenAI Codex, an AI coding agent**, at Thomas de Ruiter's request. The code was not independently reviewed by a human. Validation performed and remaining gaps are described below.
+Version 0.6.0 replaces browser-driven Teams operations with direct Teams private API calls. Chrome or Edge opens only for Microsoft authentication and token renewal, then closes. No Go, Electron, Microsoft Graph registration, npm dependencies, or persistent Teams tab is required. Node 24+ is required.
 
-A local Switchboard plugin for reading chats and unread messages, finding people, and starting or replying to Teams conversations without Microsoft Graph, app registration, or administrator API consent. It controls a dedicated Chrome/Edge session through the DOM. No screenshots, OCR, Electron wrapper, browser extension, Playwright installation, or private Teams API calls.
+The service ID remains `teams-web`, and the authentication method remains `browser`, so existing Switchboard connections can be reconnected in place. The previous DOM adapter is retained in `legacy-index.js` for regression testing; production does not invoke it.
 
-Version 0.3.0 adds unread chat discovery across virtualized windows and collapsed sections, native message search with pagination and chat context, and quoted replies. The Unread filter, search results and opening their chat context, and native quote insertion were validated against Teams Web on October 7, 2026. Quoted sending and duplicate protection were validated against isolated fixtures. The private Chrome pipe and actual HTTP listener still need the local smoke test below because the development sandbox blocks browser processes and loopback listeners.
+## Install locally
 
-Version 0.4.0 adds native quick reactions and visible reaction-pill removal, editing/deleting your own messages, and marking chats unread. Live inspection verified the reaction toolbar, ownership marker, inline edit controls and sidebar unread menu; no reactions, edits, deletions or unread flags were applied to real Teams messages for this release. These mutations were validated in isolated browser fixtures.
-
-Version 0.5.0 adds discovery and replies for native Threads channels, structured rich text and exact-email person mentions for sending and editing, and resumable older-history pages with an NDJSON export option. It also fixes reaction discovery by using the native message menu instead of requiring a transient hover toolbar. Live inspection verified channel/parent identities, opening channel search contexts, rich paste, exact-email mention selection and native mention cards, and menu reaction discovery. Inspection drafts were discarded; no real messages, reactions or edits were sent for this release. The release passed 32 automated tests and 104 browser fixture checks. Sends and edits were verified in isolated browser fixtures. The legacy Posts channel layout remains unsupported.
-
-During live search-control validation, a focus race caused one unintended test message. It was deleted. Search now guards text insertion and Enter dispatch against focus changes, with browser regression tests for both races. Full adapter sending against real Teams remains unvalidated.
-
-## Why this approach
-
-| Approach | Reading / replying | Tradeoff |
-| --- | --- | --- |
-| **Teams Web DOM through Chrome's private DevTools pipe — selected** | Both, using the real web composer | Small dependency-free adapter; persistent browser; DOM selectors need occasional maintenance |
-| Browser extension + local bridge | Both | Also efficient, but requires extension installation and bridge pairing; background tab lifecycle and browser policy add setup |
-| macOS accessibility for the installed Teams app | Both in principle | Requires accessibility permission; more UI traversal and weaker conversation identity; tied to desktop layouts |
-| Local Teams cache / IndexedDB | Partial reads | Only cached/synced data, undocumented schema; cannot reply |
-| Reverse-engineered Teams network endpoints | Both in principle | Fast bulk access, but undocumented authentication and API contracts; deliberately excluded |
-| Electron wrapper | Both through its DOM | Adds a Chromium runtime, packaging and security maintenance; installed Chrome already provides the engine |
-
-Microsoft [supports Teams Web in current browsers](https://learn.microsoft.com/en-us/microsoftteams/new-teams-web). Chrome [requires a separate profile for remote debugging](https://developer.chrome.com/blog/remote-debugging-port), which also keeps automation away from your usual tabs and cookies. The adapter uses the documented [DevTools Protocol](https://chromedevtools.github.io/devtools-protocol/), with JSON over private child-process pipes rather than a debugging port. Support for Teams Web does not imply Microsoft supports this automation.
-
-## Install
-
-In Switchboard, open **Plugins → Install from GitHub** and enter:
-
-```text
-tader/switchboard-plugin-teams
-```
-
-Repository: [tader/switchboard-plugin-teams](https://github.com/tader/switchboard-plugin-teams). The plugin manifest and entry point are at the repository root, so no subfolder is needed. To pin this version, use `tader/switchboard-plugin-teams@v0.5.0`. If already installed from the default branch, use Switchboard's **Check for updates**.
-
-If the repository is private, set `SWITCHBOARD_GITHUB_TOKEN` on the Switchboard instance performing the installation to a GitHub token with read access to this repository. The plugin installer uses this server setting, rather than your connected GitHub service account. A public repository can be installed without a token.
-
-Run Switchboard directly on this Mac with Node 24+ and Chrome or Edge installed. If your main Switchboard runs elsewhere, use its existing satellite feature on this Mac and install the plugin on the satellite. A background service must run as your logged-in macOS user with access to the graphical session. Docker on a remote server cannot open this Mac's browser.
-
-Copy this repository's contents into `<Switchboard data directory>/plugins/teams-web/` as a **real directory**. Switchboard copies plugin directories for hot reload, so use a copy instead of a symlink. The default data directory of `../switchboard` is `../switchboard/.data`. Example, run locally from this repository:
+From this checkout:
 
 ```sh
-mkdir -p ../switchboard/.data/plugins/teams-web
-cp -R plugin.json index.js icon.svg lib docs ../switchboard/.data/plugins/teams-web/
+npm test
+npm run install:local -- ~/switchboard/.data
 ```
 
-There are no npm dependencies to install. Installing from GitHub is the recommended path; the copy commands above are for local development.
+The installer stages code outside the plugin watcher, replaces `.data/plugins/teams-web`, and saves the previous code under `.data/plugin-backups/`. It does not change connection records, encrypted credentials, or `.data/plugin-data/teams-web`. Reload or restart Switchboard after installing. This branch has not been published as a GitHub release.
 
-In Switchboard, enable **Teams Web**, create a connection, and give it an account label. Chrome opens a separate profile. Sign in there manually, including MFA. The Switchboard connect dialog polls until the Teams chat sidebar is ready; its `LOCAL-BROWSER` code is a placeholder, not a Microsoft device authorization code. Do not sign in in a different Chrome window from the connect dialog's generic verification link. Each connection gets its own browser profile.
+In Switchboard, reconnect the existing Teams connection once (or add a new Teams connection). Enter your work email as the optional Microsoft work email hint. Complete sign-in in the dedicated browser window; it closes automatically when authentication finishes. `LOCAL-BROWSER` is only a placeholder in the connection dialog.
 
-Use `openTeamsLogin` if sign-in expires or you close the window. Keep the dedicated Teams window open and avoid navigating or editing it during a plugin call. Profiles survive Switchboard restart and plugin reload. Deleting a connection closes its browser and removes the profile and send ledger. No Graph credentials or Microsoft access tokens are exported to Switchboard clients.
+Old DOM-only connections report `signin_required` until reconnected. Refresh chat/channel IDs by listing them again; exact legacy thread IDs can migrate after a membership check, but UI search, person and history cursors cannot. Existing send ledger entries remain preserved; a reused key with changed request semantics is rejected.
 
-## Read and reply
-
-Switchboard exposes these operations through its API reference and normal MCP tools:
-
-1. `getTeamsStatus`: verify that the browser is signed in and selectors match.
-2. `listTeamsChats`: get opaque IDs for the chats currently rendered in the sidebar. Channel rows are excluded.
-3. `readTeamsMessages`: use a returned `chatId`; defaults to at most 50 currently rendered messages. `olderPages` can scroll up to five windows. This is bounded history access, not an account-wide archive.
-4. `sendTeamsMessage`: POST to `/chats/{chatId}/messages` with the following JSON:
-
-```json
-{
-  "text": "Thanks, I will take a look.",
-  "idempotencyKey": "reply-2026-10-07-0001"
-}
-```
-
-Use a new key for each intended message and reuse the **same key** for retries. The durable ledger records intent before editor input. A successful retry returns the previous result without typing or clicking again. A crash or missing confirmation yields `send_uncertain`; check Teams manually instead of using a new key. Keys are retained until the connection is deleted; the ledger stops new sends at 10,000 entries so it never silently drops duplicate protection. Back up the ledger together with profiles.
-
-`observed_in_chat` means the composer cleared and a new message with matching text and a new ID appeared in the UI. It is not a server delivery receipt or proof the recipient read it. Attachments, new group chats, external-user federation search, tenant switching, background subscriptions, and the legacy Posts channel layout are outside this version's scope. Channels use the native Threads layout; rich content and person mentions use the operations below.
-
-## Unread messages
-
-- `listUnreadTeamsChats` (`GET /unread/chats`) activates Teams’ native **Unread** filter, clears competing sidebar filters, expands chat sections, and scans the whole reachable sidebar. It deduplicates thread IDs, then restores filters, section state and scroll position. Previews and times appear when Teams exposes them. Set `maxWindows` (2–200, default 100) to bound discovery. It does not open each chat. `listTeamsChats` also accepts `unreadOnly=true`.
-- `listUnreadTeamsMessages` (`GET /unread/messages`) snapshots those unread chats, then opens up to three by default and returns messages after Teams' **Last read** divider. Set `maxChats` (1–5) and `limitPerChat` (1–100) to bound the work. This can mark the opened chats read.
-
-The full-text response has a flat `items` list with `chatId` and `chatTitle` on each message, plus per-chat detail in `chats`. When the Last read divider is unavailable, that chat has `boundaryFound=false`, an empty `items` list, and a separate `recentMessages` fallback. Those fallback messages are not claimed to be unread. The divider gives a UI boundary, not a per-message server read flag; the range can include your own replies. Responses report remaining snapshot chats. Summary discovery returns `discoveryComplete=true` only after observing a stable end of the native unread chat list; `truncated=true` means the cap was reached. `completeAccount=false` remains explicit because this covers chats in the current tenant’s exposed list, excludes channels and hidden conversations, and is not a server unread archive. Clear any sidebar name filter before discovery. `uiRestored=false` and `unrestoredSections` report any expanded section that was virtualized out before it could be collapsed again; filters and scroll position are restored. Full text still uses bounded Last read windows. Sidebar previews can be null when your Teams settings hide them.
-
-## Search message history
-
-`searchTeamsMessages` (`GET /search/messages?query=rollout`) uses Teams’ native search and **Messages** tab, which searches beyond loaded chat history and can return chat and channel results. Optional `limit` (1–200, default 50) and `maxPages` (1–10, default 3) bound pagination. Results include displayed author, timestamp, conversation, text snippet and an opaque `resultId`. `hasMore` and `completeSearch` describe the traversed UI results; search snippets are not necessarily full messages.
-
-`openTeamsSearchResult` (`POST /search/messages/open`) with `{ "resultId": "<returned resultId>" }` re-runs the original query, locates its exact native result key within ten pages, and opens its chat context. It returns a `chatId` and rendered messages with actual Teams message IDs, usable for reading and replying. Opening can mark messages read. Native Threads channel results return `kind=channel`, `channelId` and `parentMessageId` when Teams exposes a verified reply pane. Use the channel thread operations for reading and replying; legacy Posts contexts remain unsupported. Search result keys are not Teams message IDs. The plugin preserves existing drafts and blocks search text/Enter if focus changes.
-
-## Quoted replies
-
-Use `sendTeamsMessage` with an exact message ID obtained from `readTeamsMessages` or `openTeamsSearchResult`:
-
-```json
-{
-  "text": "Thanks, I agree with this approach.",
-  "replyToMessageId": "<Teams message ID>",
-  "idempotencyKey": "quoted-reply-2026-10-07-0001"
-}
-```
-
-The plugin opens the native context menu and chooses **Reply with quote**. It verifies the inserted quote’s message ID, inserts reply text after the quote, and rechecks quote identity synchronously at the Send click. The ledger binds retries to chat, target message and text. Preparation searches the current message window and up to five older windows for the exact target ID, then fails if it remains unavailable. Existing text and quote drafts are preserved. A failed quote preparation may leave a new quote draft for manual inspection.
-
-For quoted sends, `observed_in_chat` additionally requires a new message containing matching reply text and the expected rendered quote preview; the response includes `replyToMessageId` and `quoteObserved=true`. Teams does not expose the quoted target ID on every historical message, so read responses can have `hasQuote=true` with a null `replyToMessageId`. This remains UI observation, not a delivery receipt.
-
-## Reactions, edits, deletion and unread marking
-
-`listTeamsMessageReactions` (`GET /chats/{chatId}/messages/{messageId}/reactions`) lists the target message’s native quick reactions and visible existing pills. `available` contains reaction IDs and your selected state; `items` contains visible pills, your selected state and counts when exposed. The main message read response also reports `isOwn` using Teams’ native own-message marker.
-
-Use `setTeamsMessageReaction` (`POST` to the same reactions path) with explicit desired state:
-
-```json
-{ "reaction": "like", "selected": true, "idempotencyKey": "reaction-like-0001" }
-```
-
-Set `selected=false` to remove your reaction. Existing matching state is a no-op, so adding an already-selected reaction never toggles it off. IDs come from the native quick controls in the guarded message context menu or visible existing pills; arbitrary emoji-picker searches and a full list of reactors remain unsupported.
-
-Use `editTeamsMessage` (`PATCH /chats/{chatId}/messages/{messageId}`):
-
-```json
-{
-  "expectedText": "The rollout is tomorrow.",
-  "text": "The rollout is next week.",
-  "idempotencyKey": "edit-message-0001"
-}
-```
-
-`expectedText` is the exact original `text` returned by reading the message. The plugin checks ownership and original text before opening the native inline editor, replaces only that editor’s text, and clicks its **Done** button. It never presses Enter. Existing drafts and inline edits are preserved. Use `text` for plain editing or `content` for explicit rich replacement. Plain editing refuses links and embedded cards; structured editing can replace rich text and native person mentions. Both refuse existing quoted replies and attachments. A failed preparation/save may leave an inline draft for manual inspection.
-
-Use `deleteTeamsMessage` (`DELETE` to the same message path) with a JSON body:
-
-```json
-{ "expectedText": "The rollout is tomorrow.", "idempotencyKey": "delete-message-0001" }
-```
-
-Deletion checks your own-message marker, exact ID, original text and native Delete permission. It rechecks content immediately before clicking and only confirms after observing a native deleted-message tombstone. A message disappearing during virtualization is not proof of deletion. Unknown confirmation dialogs are left for manual inspection.
-
-`markTeamsChatUnread` (`POST /chats/{chatId}/unread`) accepts `{ "idempotencyKey": "unread-chat-0001" }`. It uses the sidebar’s **Mark as unread** menu and verifies the flag; an already-unread chat is a no-op. Sidebar chat IDs are rediscovered without deliberately opening their conversation. Recipient/search IDs may need to open a chat to resolve its sidebar identity. Opening it afterward can mark it read again.
-
-All four mutations use the same durable ledger as sends. Keys bind to operation, chat, message and payload; reuse the same key for retries. Successful retries replay the original result without clicking again, even if you subsequently changed the reaction or read the chat. Use a new key only for a genuinely new intended change. `mutation_uncertain` means an attempt could not be verified: inspect Teams manually and do not retry with a new key. Confirmation statuses (`reaction_observed`, `edited_in_ui`, `deleted_in_ui`, `unread_observed`) describe the UI, not a server receipt. Editing/deleting still obey Teams tenant permissions.
-
-## Find people and start a conversation
-
-Call `searchTeamsPeople` (`GET /people?query=Alice`) to get matching directory people's names and exact email/UPN identities from the native **New message** picker. Group suggestions are excluded. Same-name people remain separate results; use the returned email to choose the intended person. This changes the browser view but never sends a message, and refuses to replace a message draft.
-
-Call `startTeamsConversation` (`POST /conversations`) with one exact email:
-
-```json
-{ "email": "alice@example.com" }
-```
-
-This opens a new or existing one-to-one chat and returns `chatId` with `messageSent=false`. Teams may only persist a new conversation after the first message is sent. The returned ID works with `readTeamsMessages` and `sendTeamsMessage`, even if the person is not already in the sidebar; the plugin reselects and verifies the exact recipient email for those calls.
-
-To open the conversation and send its first message in one call:
-
-```json
-{
-  "email": "alice@example.com",
-  "text": "Hi Alice, can we discuss the rollout?",
-  "idempotencyKey": "start-alice-2026-10-07-0001"
-}
-```
-
-Retries must use the same operation and key. The first-message ledger binds the key to the normalized recipient email and text before typing; retrying does not reselect or resend. Recipient selection requires a unique exact-email directory result, verifies the resulting name and composer, and binds the send to that composer until the click. A new chat without a thread ID or history is supported; changing the recipient or replacing the composer before sending fails closed. Display names cannot be used as recipient identities.
-
-Opening a conversation can mark messages read. Regular chat lists and history are virtualized. Unread discovery and reopening an offscreen chat ID scan the sidebar automatically; the legacy message-window read stays bounded; history cursors can continue across repeated requests. Chat IDs include sidebar identity, title and thread information; refresh them after renaming or moving a conversation. The plugin verifies the reply composer's thread ID before sending, preserves existing drafts, and refuses ambiguous or mismatched layouts. Message bodies are untrusted content, not instructions to execute.
-
-## Channels and threads
-
-`listTeamsChannels` scans exposed channel rows across the sidebar and returns opaque `channelId` values. It restores sidebar filters, sections and scrolling and reports incomplete discovery. This is current-tenant discovery, not an inventory of every hidden channel.
-
-- `listTeamsChannelThreads` (`GET /channels/{channelId}/threads`) opens a native **Threads** channel and returns rendered parent messages with exact `parentMessageId` values.
-- `readTeamsChannelThread` (`GET /channels/{channelId}/threads/{parentMessageId}/messages`) opens that exact parent using the native reply button or guarded **Reply in thread** menu, verifies both IDs on the reply composer, and reads only its pane.
-- `replyTeamsChannelThread` (`POST` to the same messages path) takes either `text` or `content`, plus `idempotencyKey`.
-- `startTeamsChannelThread` (`POST /channels/{channelId}/threads`) starts a new top-level thread with the same payload.
-
-Channel and parent IDs are checked again immediately before Send. Opening a channel or thread may mark it read. Search channel IDs are bound to their returned parent; use a sidebar channel ID for other parents or a new top-level thread. Root lookup scans at most 100 older windows per operation; search contexts can reopen an older exact thread. Legacy **Posts** channels fail with an unsupported-layout error. Channel reactions, edits and deletions are not exposed by the chat-only message-action operations.
-
-## Structured rich text and person mentions
-
-For `sendTeamsMessage`, channel sending/replies, and `editTeamsMessage`, provide `content` **instead of** `text`. Editing still requires `expectedText`. Rich sending cannot be combined with `replyToMessageId`; native quoted replies remain the plain-text send path. Example:
-
-```json
-{
-  "content": [
-    { "type": "paragraph", "runs": [
-      { "text": "Please review ", "marks": ["bold"] },
-      { "mention": { "email": "alice@example.com", "name": "Alice Example" } },
-      { "text": " before Friday." }
-    ] },
-    { "type": "bulletedList", "items": [
-      [{ "text": "Check the proposal", "link": "https://example.com/proposal" }],
-      [{ "text": "Leave feedback", "marks": ["italic"] }]
-    ] }
-  ],
-  "idempotencyKey": "review-request-0001"
-}
-```
-
-Blocks support `paragraph`, `quote`, `bulletedList` and `numberedList`. Text runs support `bold`, `italic`, `underline`, `strike`, `code` and an optional HTTP/HTTPS `link`. Mention runs require an exact email/UPN and the native display name, available through `searchTeamsPeople`. They select a native person with that email and verify the inserted mention card and person identity; typing an ordinary `@name` in `text` does not create a notification mention. Team, channel, tag and @everyone mentions remain unsupported. Content is limited to 100 blocks, 500 runs and 20,000 text characters; arbitrary HTML is refused.
-
-The plugin uses Teams' normal editor paste handler for generated formatting, verifies the native draft and marks, and inserts real mentions through its picker. Failure can leave an inspection-required draft; it never silently sends a flattened or unresolved draft. Idempotency binds to the complete canonical structured content, including mention emails. A retry uses the same key; `send_uncertain` or `mutation_uncertain` requires manual inspection.
-
-## Older history and export
-
-Use `pageTeamsChatHistory` (`GET /chats/{chatId}/history`), `pageTeamsChannelHistory` (`GET /channels/{channelId}/history`) or `pageTeamsChannelThreadHistory` (`GET /channels/{channelId}/threads/{parentMessageId}/history`). Each returns `items`, `nextCursor` and `hasMore`. Continue with `cursor=nextCursor`; there is no fixed five-window ceiling across requests. Messages are chronological within a page, and pages move from newer history to older history. Exact message IDs are deduplicated across the traversal.
-
-Set `limit` (1–200, default 100) and `maxWindows` (1–100, default 10) to bound each call. Keep `limit` and `format` unchanged while paging. A page can be empty while the cursor seeks its retained anchor after another operation changed the view; continue if `hasMore=true`. Retrying the same cursor returns its previous page. Cursors belong to the browser profile, expire after 30 minutes and are lost on plugin restart. At most 1,000 cursor records and 100,000 observed message IDs per traversal are retained.
-
-For an export, choose `format=ndjson`. The response remains JSON and also includes an `ndjson` string for that page; collect these strings across pages to build a file. Each record includes the message ID, text, visible author/time, and native `richText`/mention metadata. This HTML and all message content are untrusted data; do not execute it. Sort or reverse page groups if an oldest-first file is needed.
-
-`uiStartReached=true` means the UI stayed stable at its start twice without a loading indicator. `completeHistory=false` remains explicit: tenant retention, hidden/deleted messages and history Teams does not expose cannot be guaranteed by UI automation. Opening conversations may mark messages read.
-
-## Performance and storage
-
-Each connection keeps one Chrome process running. Calls use compact DOM evaluations, and waits use `MutationObserver` rather than screenshot loops or repeated full-page dumps. Calls for the same profile are serialized; profiles run independently. There is a 20-operation queue cap, bounded work per history request, resumable cursors, and capped request/message sizes. This saves automation overhead, but Teams Web itself still consumes normal browser memory and CPU.
-
-The HTTP adapter binds only to loopback and accepts short-lived single-use capabilities scoped to a connection, method, path and query. Chrome uses a private debugging pipe. The stable logical service URL `http://teams.localhost` is rewritten by the plugin before any network request; no hosts-file entry or DNS configuration is needed. Use relative URLs in Switchboard calls.
-
-Profiles live in `<Switchboard data directory>/plugin-data/teams-web/profiles/<uuid>/`. Chrome manages its own cookies/session encryption. The containing directory is mode 0700; the send ledger is mode 0600 and contains reply results, including message text, in local JSON. Do not place these files in a repository. Switchboard can also record calls and responses in its ordinary audit trail.
-
-## Validate and maintain
+## Test without sending messages
 
 ```sh
 npm test
 npm run smoke
+TEAMS_LOGIN_HINT=Thomas.De-Ruiter@dsm-firmenich.com npm run check:api
+TEAMS_LOGIN_HINT=Thomas.De-Ruiter@dsm-firmenich.com npm run check:api -- --silent
 ```
 
-`npm test` runs dependency-free tests with in-memory HTTP and browser transports for authentication, account isolation, queueing, validation, protocol failures, unread discovery and snapshots, paginated search, recipient identity, quoted-message retry binding, reaction/edit/delete/unread operations, and durable duplicate protection. `npm run smoke` launches a temporary headless Chrome profile and exercises virtualized unread discovery, native search and focus races, quoted replies, reactions, inline edits, deletion, unread marking, people search, and conversation sends against local fixtures, then tests a real loopback HTTP adapter. **It never sends to Teams.** Run the smoke test from a normal Terminal on your Mac. Set `TEAMS_BROWSER_PATH` if automatic browser detection fails.
+`npm test` runs unit and adapter tests, including the retained DOM regression tests. `npm run smoke` runs the new API adapter and authentication tests with fixtures; neither command contacts Teams or sends real messages.
 
-For optional standalone manual sign-in diagnostics:
+`check:api` performs real Microsoft authentication, closes Chrome, exchanges the chat token, then reads your profile, conversation list and five recent messages from one chat. It prints only PASS markers and token expiry, never tokens or message content. The second command checks whether the saved session can obtain tokens without interactive sign-in. Both use a separate diagnostic profile at `.local-profile/api/auth-browser`; they do not create a Switchboard connection or persist API tokens. Set `TEAMS_BROWSER_PATH` to override browser detection. A successful silent check demonstrates current session reuse, not a guarantee about future company sign-in policy.
 
-```sh
-npm run signin
-```
+After installing, run `getTeamsStatus`, `getTeamsCapabilities`, `listTeamsChats` and `readTeamsMessages` in Switchboard. Chrome should remain closed for data calls with fresh tokens. Verify an intended write manually in a designated test chat before depending on write operations. No real messages were sent during this implementation.
 
-This uses `.local-profile/` in this checkout, which is ignored by Git. It is a diagnostic profile, separate from Switchboard connection profiles; it does not install or connect the plugin.
+## Authentication lifetime
 
-If Microsoft changes Teams markup, call `getTeamsDiagnostics` and inspect selector counts and `data-tid` names. It omits message text, HTML, cookies and tokens. Set **DOM selector overrides (JSON)** in plugin settings, for example:
+Tokens have individual expiry timestamps. Before a data call, the plugin renews when less than two minutes remain. An expired chat-service token can be exchanged over HTTP while its source token remains valid. Expired OAuth access tokens require briefly launching headless Chrome with the same profile and `prompt=none`; no refresh token is obtained by this flow. The browser closes after each attempt.
+
+There is no fixed manual-login interval: Microsoft session expiry, MFA, revocation and tenant policy decide when silent renewal stops working. `getTeamsStatus` reports `tokenExpiresAt`, readiness and sign-in errors. Use `openTeamsLogin` and poll status, or reconnect in Switchboard, when interactive sign-in is required. Renewal occurs on demand, not on a background schedule. Control/status calls remain available when tokens expire.
+
+## Operations and migration limits
+
+| Operation | API version |
+| --- | --- |
+| Chat/channel listing, recent chat messages | Supported |
+| Unread chats/messages | Supported, bounded conversation snapshot and consumption horizon |
+| Chat/channel history, NDJSON | Supported, server backward links and bounded cursors |
+| Person lookup | Exact email/UPN only |
+| Start conversation operation | Resolves an existing one-to-one chat; cannot create a new one |
+| Chat sends and edits | Plain text or structured formatting and links |
+| Delete own chat message; add/remove reaction | Supported |
+| Message search, quoted replies, mentions, mark unread | Not yet migrated |
+| Channel thread reads/writes, attachments, new conversations | Not yet migrated |
+
+Unsupported operations are removed from the advertised OpenAPI schema; saved calls fail explicitly. `getTeamsCapabilities` reports the supported subset. Conversation data can be partial, and retained history is not a guaranteed complete archive. API reads do not send read markers.
+
+## Writes and history
+
+Every write requires an `idempotencyKey`. Use one new key per intended action and reuse it for retries. The durable ledger records intent before the HTTP write; there are no automatic write retries. `accepted_by_api` means server acceptance, not delivery or read confirmation. If `send_uncertain` or `mutation_uncertain` occurs, inspect Teams before further action; retrying with a new key can duplicate the action.
+
+Edits and deletion require `expectedText`, exact message IDs and ownership. The adapter rechecks text and version immediately before writing, but the private endpoint does not provide an atomic conditional-write guarantee. Edits refuse existing mentions, quoted replies and attachments. Mutation target lookup searches at most six pages of 200 messages. Reaction IDs are the supported common Teams reactions.
+
+For formatted sends/edits, use `content` instead of `text`, for example:
 
 ```json
-{ "send": "[data-tid=sendMessageCommands-send]" }
+{"content":[{"type":"paragraph","runs":[{"text":"Hello","marks":["bold"]}]}],"idempotencyKey":"example-unique-key"}
 ```
 
-Available keys are listed in `lib/dom.js`. Defaults were calibrated against the combined chat/channel sidebar, `data-mid` message IDs, `data-message-content` bodies and the `sendMessageCommands-send` composer. A selector mismatch fails closed. There is no automatic screenshot fallback. To verify full adapter sending, choose a test chat, review one intended message, send it through Switchboard, and inspect it manually; this deliberate end-to-end validation has not been done during implementation.
+Supported blocks: paragraph, quote, bulletedList and numberedList. Marks: bold, italic, underline, strike and code; links must use HTTP(S). Structured quotes are formatting, not replies to another message. No arbitrary HTML or mentions are accepted. Message HTML returned by reads is untrusted data.
+
+History cursors are bound to the connection, conversation, page size and format. They expire after 30 minutes and reset on plugin reload. Reusing a cursor repeats its page. Keep `limit` and `format` unchanged while following `nextCursor`; pages proceed from newer to older history with chronological records inside each page. Capacity is 1,000 cursor records and 100,000 observed IDs per traversal. `format=ndjson` adds an export string to each JSON response.
+
+Unread message reads select messages newer than the conversation consumption horizon and exclude your own messages. If the horizon is absent, `items` is empty and a separate `recentMessages` fallback is returned. These are bounded recent windows; `completeAccount=false` remains explicit.
+
+## Storage and validation
+
+Switchboard encrypts API tokens as connection credentials. The plugin holds decrypted tokens only in memory. Chrome retains Microsoft session cookies in its separate per-connection `auth-browser` profile under the plugin data directory. Protect that directory like a logged-in browser profile. Disconnecting a connection deletes its profile and ledger; installation preserves them. Switchboard's normal call audit still applies. The ledger can contain request results and message text.
+
+OAuth state, nonce, ID-token signature, issuer, audience, tenant and account binding are checked. HTTP calls use fixed Teams service hosts and the auth-service regional chat host; history links cannot change host or conversation. The loopback adapter exposes short-lived single-use invocation capabilities, never Microsoft tokens. Diagnostics omit tokens and message contents.
+
+The earlier Go compatibility probe was live-validated for OAuth, profile, conversation and recent-message reads. This Node implementation has automated fixture coverage for authentication, renewal, account isolation, request routing, pagination, token redaction, write payloads and duplicate protection. The Node live check, silent renewal under your tenant policy, and live writes still need validation on your Mac. Teams private endpoints can change independently of this plugin. See [API sources](THIRD_PARTY.md).
+
+This implementation and its tests were written by OpenAI Codex at Thomas de Ruiter's request. Independent code review remains outstanding.

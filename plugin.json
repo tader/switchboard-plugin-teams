@@ -1,12 +1,15 @@
 {
   "id": "teams-web",
-  "name": "Teams Web",
-  "version": "0.5.0",
+  "name": "Teams",
+  "version": "0.6.0",
   "main": "index.js",
-  "description": "Read Teams chats and unread messages, find people, and start conversations through a local browser, without Microsoft Graph.",
+  "description": "Read and manage Teams chats through direct APIs, using Chrome only for Microsoft sign-in and token renewal.",
   "icon": "icon.svg",
   "settings": [
-    { "key": "browserPath", "label": "Chrome or Edge executable", "description": "Optional. On macOS, Chrome and Edge are detected automatically." },
-    { "key": "selectors", "label": "DOM selector overrides (JSON)", "type": "textarea", "advanced": true, "description": "Override selectors if your Teams rollout uses a different DOM. See the plugin guide." }
+    {
+      "key": "browserPath",
+      "label": "Chrome or Edge executable",
+      "description": "Optional. Chrome and Edge are detected automatically on macOS. Used only for authentication."
+    }
   ]
 }
