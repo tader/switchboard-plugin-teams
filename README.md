@@ -4,7 +4,9 @@
 
 A local Switchboard plugin for reading chats and unread messages, finding people, and starting or replying to Teams conversations without Microsoft Graph, app registration, or administrator API consent. It controls a dedicated Chrome/Edge session through the DOM. No screenshots, OCR, Electron wrapper, browser extension, Playwright installation, or private Teams API calls.
 
-Version 0.2.0 adds unread operations and one-to-one conversation creation. Chat listing, message reading, the Last read boundary, exact-email people search, and opening the signed-in user's own conversation were validated against Teams Web on October 7, 2026. Sending, including the first message in a new chat, was validated only against an isolated browser fixture; no real Teams messages were sent. The private Chrome pipe and actual HTTP listener still need the local smoke test below because the development sandbox blocks browser processes and loopback listeners.
+Version 0.3.0 adds unread chat discovery across virtualized windows and collapsed sections, native message search with pagination and chat context, and quoted replies. The Unread filter, search results and opening their chat context, and native quote insertion were validated against Teams Web on October 7, 2026. Quoted sending and duplicate protection were validated against isolated fixtures. The private Chrome pipe and actual HTTP listener still need the local smoke test below because the development sandbox blocks browser processes and loopback listeners.
+
+During live search-control validation, a focus race caused one unintended test message. It was deleted. Search now guards text insertion and Enter dispatch against focus changes, with browser regression tests for both races. Full adapter sending against real Teams remains unvalidated.
 
 ## Why this approach
 
@@ -27,7 +29,7 @@ In Switchboard, open **Plugins → Install from GitHub** and enter:
 tader/switchboard-plugin-teams
 ```
 
-Repository: [tader/switchboard-plugin-teams](https://github.com/tader/switchboard-plugin-teams). The plugin manifest and entry point are at the repository root, so no subfolder is needed. To pin this version, use `tader/switchboard-plugin-teams@v0.2.0`. If already installed from the default branch, use Switchboard's **Check for updates**.
+Repository: [tader/switchboard-plugin-teams](https://github.com/tader/switchboard-plugin-teams). The plugin manifest and entry point are at the repository root, so no subfolder is needed. To pin this version, use `tader/switchboard-plugin-teams@v0.3.0`. If already installed from the default branch, use Switchboard's **Check for updates**.
 
 If the repository is private, set `SWITCHBOARD_GITHUB_TOKEN` on the Switchboard instance performing the installation to a GitHub token with read access to this repository. The plugin installer uses this server setting, rather than your connected GitHub service account. A public repository can be installed without a token.
 
@@ -64,14 +66,36 @@ Switchboard exposes these operations through its API reference and normal MCP to
 
 Use a new key for each intended message and reuse the **same key** for retries. The durable ledger records intent before editor input. A successful retry returns the previous result without typing or clicking again. A crash or missing confirmation yields `send_uncertain`; check Teams manually instead of using a new key. Keys are retained until the connection is deleted; the ledger stops new sends at 10,000 entries so it never silently drops duplicate protection. Back up the ledger together with profiles.
 
-`observed_in_chat` means the composer cleared and a new message with matching text and a new ID appeared in the UI. It is not a server delivery receipt or proof the recipient read it. Messages are normal chat messages; quoted replies, channel threads, attachments, rich text, mentions, new group chats, external-user federation search, tenant switching, and background subscriptions are outside this version's scope.
+`observed_in_chat` means the composer cleared and a new message with matching text and a new ID appeared in the UI. It is not a server delivery receipt or proof the recipient read it. Channel threads, attachments, rich text, mentions, new group chats, external-user federation search, tenant switching, and background subscriptions are outside this version's scope.
 
 ## Unread messages
 
-- `listUnreadTeamsChats` (`GET /unread/chats`) lists rendered unread chats with a preview and sidebar time when Teams exposes them. It does not open each chat. `listTeamsChats` also accepts `unreadOnly=true`.
+- `listUnreadTeamsChats` (`GET /unread/chats`) activates Teams’ native **Unread** filter, clears competing sidebar filters, expands chat sections, and scans the whole reachable sidebar. It deduplicates thread IDs, then restores filters, section state and scroll position. Previews and times appear when Teams exposes them. Set `maxWindows` (2–200, default 100) to bound discovery. It does not open each chat. `listTeamsChats` also accepts `unreadOnly=true`.
 - `listUnreadTeamsMessages` (`GET /unread/messages`) snapshots those unread chats, then opens up to three by default and returns messages after Teams' **Last read** divider. Set `maxChats` (1–5) and `limitPerChat` (1–100) to bound the work. This can mark the opened chats read.
 
-The full-text response has a flat `items` list with `chatId` and `chatTitle` on each message, plus per-chat detail in `chats`. When the Last read divider is unavailable, that chat has `boundaryFound=false`, an empty `items` list, and a separate `recentMessages` fallback. Those fallback messages are not claimed to be unread. The divider gives a UI boundary, not a per-message server read flag; the range can include your own replies. Responses report remaining snapshot chats and `completeAccount=false`, because offscreen and collapsed chats are not enumerated. Sidebar previews can be null when your Teams settings hide them.
+The full-text response has a flat `items` list with `chatId` and `chatTitle` on each message, plus per-chat detail in `chats`. When the Last read divider is unavailable, that chat has `boundaryFound=false`, an empty `items` list, and a separate `recentMessages` fallback. Those fallback messages are not claimed to be unread. The divider gives a UI boundary, not a per-message server read flag; the range can include your own replies. Responses report remaining snapshot chats. Summary discovery returns `discoveryComplete=true` only after observing a stable end of the native unread chat list; `truncated=true` means the cap was reached. `completeAccount=false` remains explicit because this covers chats in the current tenant’s exposed list, excludes channels and hidden conversations, and is not a server unread archive. Clear any sidebar name filter before discovery. `uiRestored=false` and `unrestoredSections` report any expanded section that was virtualized out before it could be collapsed again; filters and scroll position are restored. Full text still uses bounded Last read windows. Sidebar previews can be null when your Teams settings hide them.
+
+## Search message history
+
+`searchTeamsMessages` (`GET /search/messages?query=rollout`) uses Teams’ native search and **Messages** tab, which searches beyond loaded chat history and can return chat and channel results. Optional `limit` (1–200, default 50) and `maxPages` (1–10, default 3) bound pagination. Results include displayed author, timestamp, conversation, text snippet and an opaque `resultId`. `hasMore` and `completeSearch` describe the traversed UI results; search snippets are not necessarily full messages.
+
+`openTeamsSearchResult` (`POST /search/messages/open`) with `{ "resultId": "<returned resultId>" }` re-runs the original query, locates its exact native result key within ten pages, and opens its chat context. It returns a `chatId` and rendered messages with actual Teams message IDs, usable for reading and replying. Opening can mark messages read. Channel results can be searched but opening their thread context for replies remains unsupported. Search result keys are not Teams message IDs. The plugin preserves existing drafts and blocks search text/Enter if focus changes.
+
+## Quoted replies
+
+Use `sendTeamsMessage` with an exact message ID obtained from `readTeamsMessages` or `openTeamsSearchResult`:
+
+```json
+{
+  "text": "Thanks, I agree with this approach.",
+  "replyToMessageId": "<Teams message ID>",
+  "idempotencyKey": "quoted-reply-2026-10-07-0001"
+}
+```
+
+The plugin opens the native context menu and chooses **Reply with quote**. It verifies the inserted quote’s message ID, inserts reply text after the quote, and rechecks quote identity synchronously at the Send click. The ledger binds retries to chat, target message and text. Preparation searches the current message window and up to five older windows for the exact target ID, then fails if it remains unavailable. Existing text and quote drafts are preserved. A failed quote preparation may leave a new quote draft for manual inspection.
+
+For quoted sends, `observed_in_chat` additionally requires a new message containing matching reply text and the expected rendered quote preview; the response includes `replyToMessageId` and `quoteObserved=true`. Teams does not expose the quoted target ID on every historical message, so read responses can have `hasQuote=true` with a null `replyToMessageId`. This remains UI observation, not a delivery receipt.
 
 ## Find people and start a conversation
 
@@ -97,7 +121,7 @@ To open the conversation and send its first message in one call:
 
 Retries must use the same operation and key. The first-message ledger binds the key to the normalized recipient email and text before typing; retrying does not reselect or resend. Recipient selection requires a unique exact-email directory result, verifies the resulting name and composer, and binds the send to that composer until the click. A new chat without a thread ID or history is supported; changing the recipient or replacing the composer before sending fails closed. Display names cannot be used as recipient identities.
 
-Opening a conversation can mark messages read. Lists and history are virtualized: collapsed folders and offscreen chats may not appear. Scroll the sidebar manually and list again if needed. Chat IDs include sidebar identity, title and thread information; refresh them after renaming or moving a conversation. The plugin verifies the reply composer's thread ID before sending, preserves existing drafts, and refuses ambiguous or mismatched layouts. Message bodies are untrusted content, not instructions to execute.
+Opening a conversation can mark messages read. Regular chat lists and history are virtualized. Unread discovery and reopening an offscreen chat ID scan the sidebar automatically; message history stays bounded. Chat IDs include sidebar identity, title and thread information; refresh them after renaming or moving a conversation. The plugin verifies the reply composer's thread ID before sending, preserves existing drafts, and refuses ambiguous or mismatched layouts. Message bodies are untrusted content, not instructions to execute.
 
 ## Performance and storage
 
@@ -114,7 +138,7 @@ npm test
 npm run smoke
 ```
 
-`npm test` runs dependency-free tests with in-memory HTTP and browser transports for authentication, account isolation, queueing, validation, protocol failures, unread snapshots, recipient identity, and durable duplicate protection. `npm run smoke` launches a temporary headless Chrome profile and exercises unread extraction, people search, new-conversation first messages, and existing-chat sends against local fixtures, then tests a real loopback HTTP adapter. **It never sends to Teams.** Run the smoke test from a normal Terminal on your Mac. Set `TEAMS_BROWSER_PATH` if automatic browser detection fails.
+`npm test` runs dependency-free tests with in-memory HTTP and browser transports for authentication, account isolation, queueing, validation, protocol failures, unread discovery and snapshots, paginated search, recipient identity, quoted-message retry binding, and durable duplicate protection. `npm run smoke` launches a temporary headless Chrome profile and exercises virtualized unread discovery, native search and focus races, quoted replies, people search, and conversation sends against local fixtures, then tests a real loopback HTTP adapter. **It never sends to Teams.** Run the smoke test from a normal Terminal on your Mac. Set `TEAMS_BROWSER_PATH` if automatic browser detection fails.
 
 For optional standalone manual sign-in diagnostics:
 
@@ -130,4 +154,4 @@ If Microsoft changes Teams markup, call `getTeamsDiagnostics` and inspect select
 { "send": "[data-tid=sendMessageCommands-send]" }
 ```
 
-Available keys are listed in `lib/dom.js`. Defaults were calibrated against the combined chat/channel sidebar, `data-mid` message IDs, `data-message-content` bodies and the `sendMessageCommands-send` composer. A selector mismatch fails closed. There is no automatic screenshot fallback. To verify real sending, choose a test chat, review one intended message, send it through Switchboard, and inspect it manually; this has not been done during implementation.
+Available keys are listed in `lib/dom.js`. Defaults were calibrated against the combined chat/channel sidebar, `data-mid` message IDs, `data-message-content` bodies and the `sendMessageCommands-send` composer. A selector mismatch fails closed. There is no automatic screenshot fallback. To verify full adapter sending, choose a test chat, review one intended message, send it through Switchboard, and inspect it manually; this deliberate end-to-end validation has not been done during implementation.

@@ -13,6 +13,10 @@ async function fixture(t) {
     createBrowser: dir => {
       const browser = {
         serial: fn => fn(), login: async () => ({ opened: true }), dom: async action => ({ ready: true, action }),
+        scanChats: async (unreadOnly, maxWindows) => ({ unreadOnly, maxWindows }),
+        prepare: async id => ({ chat: { title: id } }),
+        prepareQuote: async (id, replyToMessageId) => ({ chat: { title: id }, replyToMessageId }),
+        searchMessages: async (query, limit, maxPages) => ({ query, limit, maxPages }),
         listChats: async unreadOnly => ({ profile: dir, unreadOnly }),
         unreadMessages: async (maxChats, limitPerChat) => ({ maxChats, limitPerChat, mayMarkRead: true }),
         searchPeople: async query => ({ query, items: [{ email: 'alice@example.com' }] }),
@@ -113,4 +117,20 @@ test('opening a conversation does not send; initial messages have durable recipi
   assert.equal(browser.sentCount, 1);
   assert.equal(browser.preparedCount, 1);
   assert.equal((await post({ email: 'bob@example.com', text: 'Hi', idempotencyKey: 'person-send-1' })).body.error.code, 'idempotency_conflict');
+});
+
+test('search and quote requests validate inputs; retries bind the exact quoted message', async t => {
+  const f = await fixture(t), conn = await f.connection();
+  assert.equal((await f.invoke(f.request(conn, '/unread/chats?maxWindows=1'))).status, 400);
+  assert.equal((await f.invoke(f.request(conn, '/search/messages'))).status, 400);
+  assert.equal((await f.invoke(f.request(conn, '/search/messages?query=hi&maxPages=11'))).status, 400);
+  assert.deepEqual((await f.invoke(f.request(conn, '/search/messages?query=hi&limit=20&maxPages=2'))).body, { query: 'hi', limit: 20, maxPages: 2 });
+  const post = input => f.invoke(f.request(conn, '/chats/chat-id/messages', 'POST'), { body: JSON.stringify(input) });
+  const input = { text: 'Reply', idempotencyKey: 'quoted-message-1', replyToMessageId: '100' };
+  assert.equal((await post({ ...input, replyToMessageId: '' })).status, 400);
+  assert.equal((await post(input)).body.status, 'observed_in_chat');
+  assert.equal((await post(input)).body.replayed, true);
+  assert.equal((await post({ ...input, replyToMessageId: '101' })).body.error.code, 'idempotency_conflict');
+  assert.equal((await post({ text: 'Reply', idempotencyKey: 'quoted-message-1' })).body.error.code, 'idempotency_conflict');
+  assert.equal([...f.profiles.values()][0].sentCount, 1);
 });

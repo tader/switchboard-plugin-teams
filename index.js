@@ -5,7 +5,7 @@ import { TeamsBrowser, profilePath } from './lib/browser.js';
 import { SendLedger } from './lib/ledger.js';
 import { AdapterError } from './lib/errors.js';
 import { openapi } from './lib/openapi.js';
-import { recipientEmail, peopleQuery } from './lib/input.js';
+import { recipientEmail, peopleQuery, messageQuery, messageId } from './lib/input.js';
 
 function integer(url, name, fallback, min, max) {
   const raw = url.searchParams.get(name);
@@ -81,10 +81,18 @@ export async function createAdapter(ctx, {
       else if (request.method === 'GET' && url.pathname === '/diagnostics') operation = () => browser.dom('diagnostics');
       else if (request.method === 'GET' && ['/chats', '/unread/chats'].includes(url.pathname)) {
         const unreadOnly = url.pathname === '/unread/chats' || boolean(url, 'unreadOnly');
-        operation = () => browser.listChats(unreadOnly);
+        const maxWindows = integer(url, 'maxWindows', 100, 2, 200);
+        operation = () => unreadOnly ? browser.scanChats(true, maxWindows) : browser.listChats(false);
       } else if (request.method === 'GET' && url.pathname === '/unread/messages') {
         const maxChats = integer(url, 'maxChats', 3, 1, 5), limitPerChat = integer(url, 'limitPerChat', 50, 1, 100);
         operation = () => browser.unreadMessages(maxChats, limitPerChat);
+      } else if (request.method === 'GET' && url.pathname === '/search/messages') {
+        const query = messageQuery(url.searchParams.get('query')), limit = integer(url, 'limit', 50, 1, 200), maxPages = integer(url, 'maxPages', 3, 1, 10);
+        operation = () => browser.searchMessages(query, limit, maxPages);
+      } else if (request.method === 'POST' && url.pathname === '/search/messages/open') {
+        const input = await body(request, ['resultId']);
+        browser.decodeSearch(input.resultId);
+        operation = () => browser.searchContext(input.resultId);
       } else if (request.method === 'GET' && url.pathname === '/people') {
         const query = peopleQuery(url.searchParams.get('query'));
         operation = () => browser.searchPeople(query);
@@ -112,11 +120,12 @@ export async function createAdapter(ctx, {
         operation = () => browser.messages(id, limit, olderPages);
       } else if (request.method === 'POST' && match) {
         const id = decodeURIComponent(match[1]);
-        const input = await body(request);
+        const input = await body(request, ['text', 'idempotencyKey', 'replyToMessageId']);
+        const replyToMessageId = input.replyToMessageId === undefined ? undefined : messageId(input.replyToMessageId);
         operation = () => new SendLedger(profilePath(ctx.dataDir, invocation.profile)).send(
-          input.idempotencyKey, id, input.text,
+          input.idempotencyKey, replyToMessageId ? JSON.stringify([id, replyToMessageId]) : id, input.text,
           async () => {
-            const prepared = await browser.prepare(id);
+            const prepared = replyToMessageId ? await browser.prepareQuote(id, replyToMessageId) : await browser.prepare(id);
             if (response.destroyed) throw new AdapterError('client_disconnected', 'Caller disconnected before sending.', 499);
             return prepared;
           },
@@ -138,7 +147,7 @@ export async function createAdapter(ctx, {
   return {
     services: [{
       id: 'teams-web', name: 'Teams Web', icon: 'icon.svg',
-      description: 'Read chats and unread messages, find people, and start conversations in a dedicated browser. No Graph API.',
+      description: 'Discover unread chats, search messages, send quoted replies, find people and start conversations in a dedicated browser. No Graph API.',
       // Stable logical URL: saved calls survive reloads. authorize rewrites it
       // to the current loopback adapter before any network request is made.
       baseUrl: 'http://teams.localhost', allowedHosts: ['teams.localhost', new URL(baseUrl).host], openapi,

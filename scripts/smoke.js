@@ -4,6 +4,8 @@ import { CDP, Page, findBrowser } from '../lib/cdp.js';
 import { teamsDOM, DEFAULT_SELECTORS } from '../lib/dom.js';
 import { fixtureHTML, runDOMSuite } from '../test/dom-suite.js';
 import { featuresFixtureHTML, runFeaturesDOMSuite } from '../test/features-dom-suite.js';
+import { discoveryFixtureHTML, runDiscoveryDOMSuite } from '../test/discovery-dom-suite.js';
+import { quotesFixtureHTML, runQuotesDOMSuite } from '../test/quotes-dom-suite.js';
 import { createAdapter } from '../index.js';
 
 // Runs outside the Codex sandbox on the user's Mac. It sends only fixture
@@ -16,6 +18,8 @@ try {
   assert.ok(page instanceof Page);
   console.log(await runDOMSuite(page, teamsDOM, DEFAULT_SELECTORS, fixtureHTML));
   console.log(await runFeaturesDOMSuite(page, teamsDOM, DEFAULT_SELECTORS, featuresFixtureHTML));
+  console.log(await runDiscoveryDOMSuite(page, teamsDOM, DEFAULT_SELECTORS, discoveryFixtureHTML));
+  console.log(await runQuotesDOMSuite(page, teamsDOM, DEFAULT_SELECTORS, quotesFixtureHTML));
   adapter = await createAdapter({ dataDir: directory + '/adapter', settings: {} }, {
     createBrowser: () => ({ serial: fn => fn(), login: async () => ({}), dom: async () => ({ ready: true }), close: async () => {} }),
   });

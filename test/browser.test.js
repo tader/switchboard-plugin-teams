@@ -32,7 +32,7 @@ test('selector overrides reject unsupported fields and empty selectors', () => {
 test('unread reads snapshot flags before opening chats, cap work and separate fallback messages', async () => {
   const browser = new TeamsBrowser('/tmp/unread');
   const events = [];
-  browser.listChats = async unreadOnly => {
+  browser.scanChats = async unreadOnly => {
     assert.equal(unreadOnly, true); events.push('snapshot');
     return { items: [{ id: 'a', title: 'Alice' }, { id: 'b', title: 'Bob' }, { id: 'c', title: 'Carol' }] };
   };
@@ -57,4 +57,56 @@ test('person conversations reselect by normalized email and never trust an encod
   assert.equal(opened.messageSent, false);
   assert.equal(opened.email, 'alice@example.com');
   assert.equal(browser.decodeChat(opened.chatId).title, 'Verified Alice');
+});
+
+test('unread discovery walks virtualized windows, deduplicates threads, requires a stable end and restores UI', async () => {
+  const browser = new TeamsBrowser('/tmp/discover'), events = [];
+  const a = { key: { attribute: 'data-chat-id', value: 'a' }, threadId: 'a', title: 'A', unread: true };
+  const b = { ...a, key: { attribute: 'data-chat-id', value: 'b' }, threadId: 'b', title: 'B' };
+  let next = 0;
+  browser.dom = async (action, args) => {
+    events.push(action); assert.ok(args.token);
+    if (action === 'scanWindow') return { items: [a], atEnd: false, position: 0, height: 300 };
+    if (action === 'scanNext') { next++; return { items: [a, b], atEnd: true, position: 200, height: 300 }; }
+    return {};
+  };
+  const result = await browser.scanChats(true, 10);
+  assert.equal(result.items.length, 2); assert.equal(result.discoveryComplete, true); assert.equal(next, 2);
+  assert.equal(result.completeAccount, false); assert.equal(events.at(-1), 'scanEnd');
+  next = 0; const partial = await browser.scanChats(true, 2);
+  assert.equal(partial.discoveryComplete, false); assert.equal(partial.truncated, true);
+  browser.dom = async action => { events.push(action); if (action === 'scanWindow') throw new Error('layout changed'); return {}; };
+  await assert.rejects(browser.scanChats(true), /layout changed/); assert.equal(events.at(-1), 'scanEnd');
+});
+
+test('native message search deduplicates paginated results and caps work', async () => {
+  const browser = new TeamsBrowser('/tmp/search'), calls = []; let page = 0;
+  browser.page = { call: async (method, params) => calls.push([method, params]) };
+  browser.dom = async (action, args) => {
+    assert.ok(action === 'searchFocus' || args.query === 'find this');
+    if (action === 'searchFocus') return { focused: true };
+    if (action === 'searchNext') { page++; return { advanced: true }; }
+    if (action === 'searchResults') return { items: [{ key: 'serp-message-card-content-' + page, text: 'match' }, { key: 'serp-message-card-content-' + (page + 1), text: 'match' }], hasNext: page < 2 };
+    return {};
+  };
+  const result = await browser.searchMessages('find this', 100, 3);
+  assert.equal(result.items.length, 4); assert.equal(result.completeSearch, true); assert.equal(result.pagesScanned, 3);
+  assert.equal(calls[1][1].text, '\r');
+  const decoded = browser.decodeSearch(result.items[0].resultId); assert.equal(decoded.query, 'find this');
+  assert.throws(() => browser.decodeSearch('invalid'), { code: 'invalid_search_result' });
+});
+
+test('quote preparation finds an exact older ID after reopening resets the message window', async () => {
+  const browser = new TeamsBrowser('/tmp/older-quote');
+  const chat = { title: 'Alice', threadId: 'thread-a' }; let history = 0;
+  browser.openChat = async () => chat;
+  browser.page = { call: async (_method, args) => assert.equal(args.button, 'right') };
+  browser.dom = async (action, args) => {
+    if (action === 'quoteTarget') { if (history < 2) { const error = new Error('not rendered'); error.code = 'message_unavailable'; throw error; } return { x: 1, y: 2 }; }
+    if (action === 'older') { history++; return { changed: true }; }
+    assert.equal(action, 'quoteSelect'); assert.equal(args.replyToMessageId, 'older-id');
+    return { replyToMessageId: args.replyToMessageId, beforeIds: ['older-id'] };
+  };
+  assert.equal((await browser.prepareQuote('chat-id', 'older-id')).replyToMessageId, 'older-id');
+  assert.equal(history, 2);
 });
