@@ -1,8 +1,8 @@
 # Teams API plugin for Switchboard
 
-Version 0.6.0 replaces browser-driven Teams operations with direct Teams private API calls. Chrome or Edge opens only for Microsoft authentication and token renewal, then closes. No Go, Electron, Microsoft Graph registration, npm dependencies, or persistent Teams tab is required. Node 24+ is required.
+Version 0.7.0 supports direct Teams private API calls with local browser sign-in or imported tokens. For browser sign-in, Chrome or Edge opens only for authentication and renewal, then closes. A central Switchboard can import tokens from another machine and run without Chrome or Edge. No Go, Electron, Microsoft Graph registration, npm dependencies, or persistent Teams tab is required. Node 24+ is required.
 
-The service ID remains `teams-web`, and the authentication method remains `browser`, so existing Switchboard connections can be reconnected in place. The previous DOM adapter is retained in `legacy-index.js` for regression testing; production does not invoke it.
+The service ID remains `teams-web`, and the existing browser authentication method remains `browser`, so existing Switchboard connections can be reconnected in place. The previous DOM adapter is retained in `legacy-index.js` for regression testing; production does not invoke it.
 
 ## Install locally
 
@@ -15,9 +15,33 @@ npm run install:local -- ~/switchboard/.data
 
 The installer stages code outside the plugin watcher, replaces `.data/plugins/teams-web`, and saves the previous code under `.data/plugin-backups/`. It does not change connection records, encrypted credentials, or `.data/plugin-data/teams-web`. Reload or restart Switchboard after installing. This branch has not been published as a GitHub release.
 
-In Switchboard, reconnect the existing Teams connection once (or add a new Teams connection). Enter your work email as the optional Microsoft work email hint. Complete sign-in in the dedicated browser window; it closes automatically when authentication finishes. `LOCAL-BROWSER` is only a placeholder in the connection dialog.
+In Switchboard, reconnect the existing Teams connection once (or add a new Teams connection). Choose Microsoft sign-in through local Chrome, or Import Teams tokens for a browser-free host (see below). For browser sign-in, enter your work email as the optional Microsoft work email hint. Complete sign-in in the dedicated browser window; it closes automatically when authentication finishes. `LOCAL-BROWSER` is only a placeholder in the connection dialog.
 
 Old DOM-only connections report `signin_required` until reconnected. Refresh chat/channel IDs by listing them again; exact legacy thread IDs can migrate after a membership check, but UI search, person and history cursors cannot. Existing send ledger entries remain preserved; a reused key with changed request semantics is rejected.
+
+## Central Switchboard without Chrome or Edge
+
+On a machine with Node 24+ and Chrome or Edge, run from the plugin checkout:
+
+```sh
+npm run auth:export -- --out ~/teams-tokens.json --login-hint your.name@example.com
+```
+
+Complete Microsoft sign-in in the dedicated browser window. The script closes the browser and writes a compact JSON bundle with owner-only permissions (`0600`). It requires a new output filename, refuses existing files and symlinks, removes incomplete output on failure or interruption, and never prints tokens. It does not require a local Switchboard or send Teams messages. `TEAMS_BROWSER_PATH` overrides browser detection; `TEAMS_LOGIN_HINT` is an alternative to `--login-hint`.
+
+Install this plugin version on the central Switchboard. Add Teams or reconnect an existing connection, select **Import Teams tokens**, enter a label and paste the complete file contents into the secret bundle field. The plugin validates both token signatures, expected resources, matching tenant/account IDs and expiry, then exchanges the chat token and performs a read-only conversation request before accepting the connection. Switchboard encrypts accepted credentials; a failed import leaves an existing session intact. Delete the plaintext export file after import. The JSON contains bearer credentials; browser cookies remain on the authentication machine.
+
+The central host never opens or discovers a browser for imported-token connections. This OAuth flow provides no refresh token, so renewal is manual. The derived chat token can renew over HTTP while both Microsoft access tokens remain fresh. When either access token approaches expiry or is rejected, export a replacement and reconnect the same central connection. Tenant/account IDs must match; reconnection preserves the profile and durable send ledger. A different account requires a separate connection.
+
+Silent authentication can reuse the saved local browser profile when Microsoft permits it. Use a new output filename:
+
+```sh
+npm run auth:export -- --silent --out ~/teams-tokens-renewed.json
+```
+
+If Microsoft requires sign-in, repeat without `--silent`. The export profile is separate from diagnostic and Switchboard profiles. Existing browser connections can switch to token import through reconnect; selecting browser authentication again requires a browser on that Switchboard host.
+
+`getTeamsStatus` reports `authMode="tokens"`, expiry and `tokenImportRequired`. Expired or rejected access tokens produce `token_import_required` with re-import instructions. `openTeamsLogin` returns those instructions instead of opening a browser. Status and capability calls remain available after expiry. Read-only live export/import on your central host remains to be verified; fixture tests do not establish tenant or host compatibility.
 
 ## Test without sending messages
 
@@ -36,7 +60,7 @@ After installing, run `getTeamsStatus`, `getTeamsCapabilities`, `listTeamsChats`
 
 ## Authentication lifetime
 
-Tokens have individual expiry timestamps. Before a data call, the plugin renews when less than two minutes remain. An expired chat-service token can be exchanged over HTTP while its source token remains valid. Expired OAuth access tokens require briefly launching headless Chrome with the same profile and `prompt=none`; no refresh token is obtained by this flow. The browser closes after each attempt.
+Tokens have individual expiry timestamps. Before a data call, the plugin renews when less than two minutes remain. An expired chat-service token can be exchanged over HTTP while its source token remains valid. In browser mode, expired OAuth access tokens require briefly launching headless Chrome with the same profile and `prompt=none`; no refresh token is obtained by this flow. The browser closes after each attempt. Imported-token connections instead require manual replacement of Microsoft access tokens.
 
 There is no fixed manual-login interval: Microsoft session expiry, MFA, revocation and tenant policy decide when silent renewal stops working. `getTeamsStatus` reports `tokenExpiresAt`, readiness and sign-in errors. Use `openTeamsLogin` and poll status, or reconnect in Switchboard, when interactive sign-in is required. Renewal occurs on demand, not on a background schedule. Control/status calls remain available when tokens expire.
 
@@ -76,10 +100,10 @@ Unread message reads select messages newer than the conversation consumption hor
 
 ## Storage and validation
 
-Switchboard encrypts API tokens as connection credentials. The plugin holds decrypted tokens only in memory. Chrome retains Microsoft session cookies in its separate per-connection `auth-browser` profile under the plugin data directory. Protect that directory like a logged-in browser profile. Disconnecting a connection deletes its profile and ledger; installation preserves them. Switchboard's normal call audit still applies. The ledger can contain request results and message text.
+Switchboard encrypts API tokens as connection credentials for both authentication methods. The plugin holds decrypted tokens only in memory. For browser authentication, Chrome retains Microsoft session cookies in its separate per-connection `auth-browser` profile under the plugin data directory. Protect that directory like a logged-in browser profile. Disconnecting a connection deletes its profile and ledger; installation preserves them. Switchboard's normal call audit still applies. The ledger can contain request results and message text.
 
 OAuth state, nonce, ID-token signature, issuer, audience, tenant and account binding are checked. HTTP calls use fixed Teams service hosts and the auth-service regional chat host; history links cannot change host or conversation. The loopback adapter exposes short-lived single-use invocation capabilities, never Microsoft tokens. Diagnostics omit tokens and message contents.
 
-The earlier Go compatibility probe was live-validated for OAuth, profile, conversation and recent-message reads. This Node implementation has automated fixture coverage for authentication, renewal, account isolation, request routing, pagination, token redaction, write payloads and duplicate protection. The Node live check, silent renewal under your tenant policy, and live writes still need validation on your Mac. Teams private endpoints can change independently of this plugin. See [API sources](THIRD_PARTY.md).
+The earlier Go compatibility probe was live-validated for OAuth, profile, conversation and recent-message reads. This Node implementation has automated fixture coverage for authentication, renewal, portable token export/import, restart recovery, account isolation, request routing, pagination, token redaction, write payloads and duplicate protection. The Node live check, silent renewal under your tenant policy, central token import, and live writes still need validation. Teams private endpoints can change independently of this plugin. See [API sources](THIRD_PARTY.md).
 
 This implementation and its tests were written by OpenAI Codex at Thomas de Ruiter's request. Independent code review remains outstanding.
