@@ -48,3 +48,18 @@ test('corrupted durable state stops sends rather than resetting duplicate protec
   await fs.writeFile(ledger.file, 'broken JSON');
   await assert.rejects(() => ledger.send('request-004', 'chat1', 'hello', () => assert.fail(), () => assert.fail()), SyntaxError);
 });
+
+
+test('mutation intent binds operation, target and payload, survives restart, and releases preparation', async t => {
+  const dir = await fs.mkdtemp('/tmp/teams-mutation-ledger-'); t.after(() => fs.rm(dir, { recursive: true, force: true }));
+  const ledger = new SendLedger(dir); let executions = 0, cleanups = 0;
+  const target = ['reaction', 'chat1', 'message1'], payload = { reaction: 'like', selected: true };
+  const prepare = async () => ({ cleanup: async () => cleanups++ });
+  await ledger.mutate('mutation-001', target, payload, prepare, async () => { executions++; return { selected: true }; });
+  assert.equal((await new SendLedger(dir).mutate('mutation-001', target, payload, () => assert.fail(), () => assert.fail())).replayed, true);
+  assert.equal(executions, 1); assert.equal(cleanups, 1);
+  await assert.rejects(ledger.mutate('mutation-001', ['delete', 'chat1', 'message1'], {}, () => assert.fail(), () => assert.fail()), { code: 'idempotency_conflict' });
+  await assert.rejects(ledger.mutate('mutation-002', ['delete', 'chat1', 'message1'], {}, prepare, async () => { throw new Error('connection lost after click'); }), /connection lost/);
+  assert.equal(cleanups, 2);
+  await assert.rejects(new SendLedger(dir).mutate('mutation-002', ['delete', 'chat1', 'message1'], {}, () => assert.fail(), () => assert.fail()), { code: 'mutation_uncertain' });
+});

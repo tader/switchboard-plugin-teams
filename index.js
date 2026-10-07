@@ -5,7 +5,7 @@ import { TeamsBrowser, profilePath } from './lib/browser.js';
 import { SendLedger } from './lib/ledger.js';
 import { AdapterError } from './lib/errors.js';
 import { openapi } from './lib/openapi.js';
-import { recipientEmail, peopleQuery, messageQuery, messageId } from './lib/input.js';
+import { recipientEmail, peopleQuery, messageQuery, messageId, messageText, reactionInput } from './lib/input.js';
 
 function integer(url, name, fallback, min, max) {
   const raw = url.searchParams.get(name);
@@ -74,6 +74,8 @@ export async function createAdapter(ctx, {
       const url = new URL(request.url ?? '/', 'http://localhost');
       if (request.method !== invocation.method || url.pathname !== invocation.pathname || url.search !== invocation.search) throw new AdapterError('invocation_mismatch', 'Invocation is bound to a different request.', 403);
       const browser = getBrowser(invocation.profile);
+      const messageMatch = url.pathname.match(/^\/chats\/([^/]+)\/messages\/([^/]+)(\/reactions)?$/);
+      const unreadMatch = url.pathname.match(/^\/chats\/([^/]+)\/unread$/);
       const match = url.pathname.match(/^\/chats\/([^/]+)\/messages$/);
       let operation;
       if (request.method === 'GET' && url.pathname === '/status') operation = () => browser.dom('status');
@@ -114,6 +116,34 @@ export async function createAdapter(ctx, {
           );
         }
       }
+      else if (messageMatch || unreadMatch) {
+        const id = decodeURIComponent((messageMatch || unreadMatch)[1]);
+        const mid = messageMatch ? messageId(decodeURIComponent(messageMatch[2])) : null;
+        if (request.method === 'GET' && messageMatch?.[3]) operation = () => browser.reactions(id, mid);
+        else {
+          let kind, payload, input;
+          if (request.method === 'POST' && unreadMatch) {
+            kind = 'unread'; input = await body(request, ['idempotencyKey']); payload = {};
+          } else if (request.method === 'POST' && messageMatch?.[3]) {
+            kind = 'reaction'; input = await body(request, ['reaction', 'selected', 'idempotencyKey']); payload = reactionInput(input.reaction, input.selected);
+          } else if (request.method === 'PATCH' && messageMatch && !messageMatch[3]) {
+            kind = 'edit'; input = await body(request, ['text', 'expectedText', 'idempotencyKey']);
+            payload = { expectedText: messageText(input.expectedText, 'expectedText', true), text: messageText(input.text) };
+          } else if (request.method === 'DELETE' && messageMatch && !messageMatch[3]) {
+            kind = 'delete'; input = await body(request, ['expectedText', 'idempotencyKey']); payload = { expectedText: messageText(input.expectedText, 'expectedText', true) };
+          } else throw new AdapterError('not_found', 'Unknown message operation.', 404);
+          const checkCancelled = () => { if (response.destroyed) throw new AdapterError('client_disconnected', 'Caller disconnected before changing Teams.', 499); };
+          operation = () => new SendLedger(profilePath(ctx.dataDir, invocation.profile)).mutate(
+            input.idempotencyKey, [kind, id, mid], payload,
+            async () => {
+              const prepared = kind === 'unread' ? await browser.prepareUnread(id) : await browser.prepareMessageAction(id, mid, kind, payload);
+              if (response.destroyed) { await prepared.cleanup?.(); checkCancelled(); }
+              return prepared;
+            },
+            prepared => { checkCancelled(); return browser.executeMessageAction(prepared, checkCancelled); },
+          );
+        }
+      }
       else if (request.method === 'GET' && match) {
         const id = decodeURIComponent(match[1]);
         const limit = integer(url, 'limit', 50, 1, 200), olderPages = integer(url, 'olderPages', 0, 0, 5);
@@ -147,7 +177,7 @@ export async function createAdapter(ctx, {
   return {
     services: [{
       id: 'teams-web', name: 'Teams Web', icon: 'icon.svg',
-      description: 'Discover unread chats, search messages, send quoted replies, find people and start conversations in a dedicated browser. No Graph API.',
+      description: 'Discover unread chats, search messages, manage reactions and messages, mark chats unread, find people and start conversations in a dedicated browser. No Graph API.',
       // Stable logical URL: saved calls survive reloads. authorize rewrites it
       // to the current loopback adapter before any network request is made.
       baseUrl: 'http://teams.localhost', allowedHosts: ['teams.localhost', new URL(baseUrl).host], openapi,

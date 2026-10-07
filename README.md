@@ -6,6 +6,8 @@ A local Switchboard plugin for reading chats and unread messages, finding people
 
 Version 0.3.0 adds unread chat discovery across virtualized windows and collapsed sections, native message search with pagination and chat context, and quoted replies. The Unread filter, search results and opening their chat context, and native quote insertion were validated against Teams Web on October 7, 2026. Quoted sending and duplicate protection were validated against isolated fixtures. The private Chrome pipe and actual HTTP listener still need the local smoke test below because the development sandbox blocks browser processes and loopback listeners.
 
+Version 0.4.0 adds native quick reactions and visible reaction-pill removal, editing/deleting your own messages, and marking chats unread. Live inspection verified the reaction toolbar, ownership marker, inline edit controls and sidebar unread menu; no reactions, edits, deletions or unread flags were applied to real Teams messages for this release. These mutations were validated in isolated browser fixtures.
+
 During live search-control validation, a focus race caused one unintended test message. It was deleted. Search now guards text insertion and Enter dispatch against focus changes, with browser regression tests for both races. Full adapter sending against real Teams remains unvalidated.
 
 ## Why this approach
@@ -29,7 +31,7 @@ In Switchboard, open **Plugins → Install from GitHub** and enter:
 tader/switchboard-plugin-teams
 ```
 
-Repository: [tader/switchboard-plugin-teams](https://github.com/tader/switchboard-plugin-teams). The plugin manifest and entry point are at the repository root, so no subfolder is needed. To pin this version, use `tader/switchboard-plugin-teams@v0.3.0`. If already installed from the default branch, use Switchboard's **Check for updates**.
+Repository: [tader/switchboard-plugin-teams](https://github.com/tader/switchboard-plugin-teams). The plugin manifest and entry point are at the repository root, so no subfolder is needed. To pin this version, use `tader/switchboard-plugin-teams@v0.4.0`. If already installed from the default branch, use Switchboard's **Check for updates**.
 
 If the repository is private, set `SWITCHBOARD_GITHUB_TOKEN` on the Switchboard instance performing the installation to a GitHub token with read access to this repository. The plugin installer uses this server setting, rather than your connected GitHub service account. A public repository can be installed without a token.
 
@@ -97,6 +99,42 @@ The plugin opens the native context menu and chooses **Reply with quote**. It ve
 
 For quoted sends, `observed_in_chat` additionally requires a new message containing matching reply text and the expected rendered quote preview; the response includes `replyToMessageId` and `quoteObserved=true`. Teams does not expose the quoted target ID on every historical message, so read responses can have `hasQuote=true` with a null `replyToMessageId`. This remains UI observation, not a delivery receipt.
 
+## Reactions, edits, deletion and unread marking
+
+`listTeamsMessageReactions` (`GET /chats/{chatId}/messages/{messageId}/reactions`) lists the target message’s native quick reactions and visible existing pills. `available` contains reaction IDs and your selected state; `items` contains visible pills, your selected state and counts when exposed. The main message read response also reports `isOwn` using Teams’ native own-message marker.
+
+Use `setTeamsMessageReaction` (`POST` to the same reactions path) with explicit desired state:
+
+```json
+{ "reaction": "like", "selected": true, "idempotencyKey": "reaction-like-0001" }
+```
+
+Set `selected=false` to remove your reaction. Existing matching state is a no-op, so adding an already-selected reaction never toggles it off. IDs come from the native quick toolbar or visible existing pills; arbitrary emoji-picker searches and a full list of reactors remain unsupported.
+
+Use `editTeamsMessage` (`PATCH /chats/{chatId}/messages/{messageId}`):
+
+```json
+{
+  "expectedText": "The rollout is tomorrow.",
+  "text": "The rollout is next week.",
+  "idempotencyKey": "edit-message-0001"
+}
+```
+
+`expectedText` is the exact original `text` returned by reading the message. The plugin checks ownership and original text before opening the native inline editor, replaces only that editor’s text, and clicks its **Done** button. It never presses Enter. Existing drafts and inline edits are preserved. Editing currently accepts plain text; it refuses quotes, attachments, links and embedded emoji cards that replacement would flatten. A failed preparation/save may leave an inline draft for manual inspection.
+
+Use `deleteTeamsMessage` (`DELETE` to the same message path) with a JSON body:
+
+```json
+{ "expectedText": "The rollout is tomorrow.", "idempotencyKey": "delete-message-0001" }
+```
+
+Deletion checks your own-message marker, exact ID, original text and native Delete permission. It rechecks content immediately before clicking and only confirms after observing a native deleted-message tombstone. A message disappearing during virtualization is not proof of deletion. Unknown confirmation dialogs are left for manual inspection.
+
+`markTeamsChatUnread` (`POST /chats/{chatId}/unread`) accepts `{ "idempotencyKey": "unread-chat-0001" }`. It uses the sidebar’s **Mark as unread** menu and verifies the flag; an already-unread chat is a no-op. Sidebar chat IDs are rediscovered without deliberately opening their conversation. Recipient/search IDs may need to open a chat to resolve its sidebar identity. Opening it afterward can mark it read again.
+
+All four mutations use the same durable ledger as sends. Keys bind to operation, chat, message and payload; reuse the same key for retries. Successful retries replay the original result without clicking again, even if you subsequently changed the reaction or read the chat. Use a new key only for a genuinely new intended change. `mutation_uncertain` means an attempt could not be verified: inspect Teams manually and do not retry with a new key. Confirmation statuses (`reaction_observed`, `edited_in_ui`, `deleted_in_ui`, `unread_observed`) describe the UI, not a server receipt. Editing/deleting still obey Teams tenant permissions.
+
 ## Find people and start a conversation
 
 Call `searchTeamsPeople` (`GET /people?query=Alice`) to get matching directory people's names and exact email/UPN identities from the native **New message** picker. Group suggestions are excluded. Same-name people remain separate results; use the returned email to choose the intended person. This changes the browser view but never sends a message, and refuses to replace a message draft.
@@ -138,7 +176,7 @@ npm test
 npm run smoke
 ```
 
-`npm test` runs dependency-free tests with in-memory HTTP and browser transports for authentication, account isolation, queueing, validation, protocol failures, unread discovery and snapshots, paginated search, recipient identity, quoted-message retry binding, and durable duplicate protection. `npm run smoke` launches a temporary headless Chrome profile and exercises virtualized unread discovery, native search and focus races, quoted replies, people search, and conversation sends against local fixtures, then tests a real loopback HTTP adapter. **It never sends to Teams.** Run the smoke test from a normal Terminal on your Mac. Set `TEAMS_BROWSER_PATH` if automatic browser detection fails.
+`npm test` runs dependency-free tests with in-memory HTTP and browser transports for authentication, account isolation, queueing, validation, protocol failures, unread discovery and snapshots, paginated search, recipient identity, quoted-message retry binding, reaction/edit/delete/unread operations, and durable duplicate protection. `npm run smoke` launches a temporary headless Chrome profile and exercises virtualized unread discovery, native search and focus races, quoted replies, reactions, inline edits, deletion, unread marking, people search, and conversation sends against local fixtures, then tests a real loopback HTTP adapter. **It never sends to Teams.** Run the smoke test from a normal Terminal on your Mac. Set `TEAMS_BROWSER_PATH` if automatic browser detection fails.
 
 For optional standalone manual sign-in diagnostics:
 

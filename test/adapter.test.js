@@ -13,6 +13,10 @@ async function fixture(t) {
     createBrowser: dir => {
       const browser = {
         serial: fn => fn(), login: async () => ({ opened: true }), dom: async action => ({ ready: true, action }),
+        prepareMessageAction: async (id, mid, kind, payload) => { browser.mutationPrepared = (browser.mutationPrepared ?? 0) + 1; return { args: { kind, id, mid, ...payload } }; },
+        prepareUnread: async id => ({ args: { kind: 'unread', id }, cleanup: async () => { browser.cleaned = true; } }),
+        executeMessageAction: async prepared => { browser.mutated = (browser.mutated ?? 0) + 1; return { status: prepared.args.kind + '_observed', ...prepared.args }; },
+        reactions: async (_id, mid) => ({ messageId: mid, available: [{ reaction: 'like' }] }),
         scanChats: async (unreadOnly, maxWindows) => ({ unreadOnly, maxWindows }),
         prepare: async id => ({ chat: { title: id } }),
         prepareQuote: async (id, replyToMessageId) => ({ chat: { title: id }, replyToMessageId }),
@@ -133,4 +137,26 @@ test('search and quote requests validate inputs; retries bind the exact quoted m
   assert.equal((await post({ ...input, replyToMessageId: '101' })).body.error.code, 'idempotency_conflict');
   assert.equal((await post({ text: 'Reply', idempotencyKey: 'quoted-message-1' })).body.error.code, 'idempotency_conflict');
   assert.equal([...f.profiles.values()][0].sentCount, 1);
+});
+
+
+test('message changes require explicit state and expected content; replay never reopens menus', async t => {
+  const f = await fixture(t), conn = await f.connection();
+  const route = (path, method, value) => f.invoke(f.request(conn, path, method), { body: JSON.stringify(value) });
+  const base = '/chats/chat-id/messages/100';
+  assert.equal((await f.invoke(f.request(conn, base + '/reactions'))).body.available[0].reaction, 'like');
+  assert.equal((await route(base + '/reactions', 'POST', { reaction: 'like', idempotencyKey: 'reaction-001' })).status, 400);
+  assert.equal((await route(base, 'PATCH', { text: 'New', idempotencyKey: 'editing-001' })).status, 400);
+  assert.equal((await route(base, 'DELETE', { idempotencyKey: 'deleting-001' })).status, 400);
+  const input = { reaction: 'yes', selected: true, idempotencyKey: 'reaction-001' };
+  assert.equal((await route(base + '/reactions', 'POST', input)).body.reaction, 'like');
+  assert.equal((await route(base + '/reactions', 'POST', { ...input, reaction: 'like' })).body.replayed, true);
+  assert.equal((await route(base + '/reactions', 'POST', { ...input, selected: false })).body.error.code, 'idempotency_conflict');
+  assert.equal((await route(base, 'PATCH', { text: 'New', expectedText: 'Old', idempotencyKey: 'editing-001' })).body.status, 'edit_observed');
+  assert.equal((await route(base, 'DELETE', { expectedText: 'New', idempotencyKey: 'deleting-001' })).body.status, 'delete_observed');
+  assert.equal((await route('/chats/chat-id/unread', 'POST', { idempotencyKey: 'unread-001' })).body.status, 'unread_observed');
+  assert.equal((await route('/chats/chat-id/unread', 'POST', { idempotencyKey: 'unread-001' })).body.replayed, true);
+  assert.equal((await route('/chats/chat-id/unread', 'POST', { selected: false, idempotencyKey: 'unread-002' })).status, 400);
+  const browser = [...f.profiles.values()][0];
+  assert.equal(browser.mutated, 4); assert.equal(browser.mutationPrepared, 3); assert.equal(browser.cleaned, true);
 });

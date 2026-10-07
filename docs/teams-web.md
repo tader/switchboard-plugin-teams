@@ -7,7 +7,7 @@ services: [teams-web]
 
 This plugin was coded by **OpenAI Codex, an AI coding agent**, at Thomas de Ruiter's request. Its implementation, tests, and documentation were AI-written; independent human code review and real Teams send validation remain outstanding.
 
-Install it using **Plugins → Install from GitHub** with `tader/switchboard-plugin-teams`, or `tader/switchboard-plugin-teams@v0.3.0` to pin this release. Existing default-branch installations can use **Check for updates**.
+Install it using **Plugins → Install from GitHub** with `tader/switchboard-plugin-teams`, or `tader/switchboard-plugin-teams@v0.4.0` to pin this release. Existing default-branch installations can use **Check for updates**.
 
 For a private repository, the Switchboard administrator must configure `SWITCHBOARD_GITHUB_TOKEN` with a token that can read this repository. Connecting a GitHub account in Switchboard does not configure the plugin installer's credentials.
 
@@ -22,6 +22,12 @@ For unread summaries, use `listUnreadTeamsChats`, or `listTeamsChats` with `unre
 Use `searchTeamsMessages` with `query`, optional `limit` (1–200) and `maxPages` (1–10) to search native Teams history. Results contain snippets and `resultId`; call `openTeamsSearchResult` with that resultId to get chat context, chatId and actual message IDs. Opening can mark messages read. Search can find channel messages, but opening channel-thread contexts for replies is unsupported. Search preserves drafts and guards input and Enter against focus races.
 
 For a quoted reply, add `replyToMessageId` to `sendTeamsMessage`, using an exact message ID from reading chat context. Preparation searches the current window and up to five older windows for the exact target ID. The plugin verifies the native quote ID before sending; retries bind to that target as well as chat and text. A changed quote blocks sending. Failed preparation may leave a quote draft to inspect manually.
+
+`listTeamsMessageReactions` lists native quick reaction IDs and visible existing reaction pills. Use `setTeamsMessageReaction` with `reaction`, explicit `selected=true` to add or `false` to remove, and `idempotencyKey`. Already matching state is a no-op. Arbitrary emoji-picker searches are not supported.
+
+`editTeamsMessage` takes exact `messageId`, `expectedText`, replacement `text` and `idempotencyKey`. It edits only your own plain-text message through its native inline editor; quotes, attachments, links and embedded emoji cards are refused. Existing drafts are preserved. `deleteTeamsMessage` takes `messageId`, `expectedText` and `idempotencyKey` and deletes only your own message. Both refuse stale original text and obey Teams permissions. Deletion requires a native tombstone; disappearance from a virtualized window is not enough. Failed edits may leave an inline draft to inspect.
+
+`markTeamsChatUnread` takes `chatId` and `idempotencyKey`, uses the native sidebar action and verifies the unread flag. It never toggles an already-unread chat to read. Opening that chat later can clear the flag. For all message mutations, reuse the same key for retries; `mutation_uncertain` requires manual inspection, not a new key. A successful retry replays its original result without clicking again.
 
 To start a conversation with a specific person, call `searchTeamsPeople` with their name or email and choose the correct returned email/UPN. Then call `startTeamsConversation` with `{ "email": "alice@example.com" }`. It returns a usable `chatId` without sending. Add `text` and `idempotencyKey` to send an initial message in the same call. A new chat may only be persisted by Teams after its first message. The plugin selects only a unique exact-email directory person and refuses display-name-only recipient selection or an existing manual message draft.
 

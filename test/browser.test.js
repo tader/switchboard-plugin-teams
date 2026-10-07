@@ -110,3 +110,19 @@ test('quote preparation finds an exact older ID after reopening resets the messa
   assert.equal((await browser.prepareQuote('chat-id', 'older-id')).replyToMessageId, 'older-id');
   assert.equal(history, 2);
 });
+
+
+test('marking a rendered chat unread does not open it; edit input uses only the prepared inline editor', async () => {
+  const browser = new TeamsBrowser('/tmp/actions');
+  const chat = { key: { attribute: 'data-chat-id', value: 'thread-a' }, title: 'Alice', threadId: 'thread-a' };
+  browser.openChat = () => assert.fail('Unread marking should not open the conversation');
+  const calls = [];
+  browser.dom = async (action, args) => { calls.push(action); if (action === 'action:unreadTarget') return { x: 1, y: 2, alreadyUnread: false }; return {}; };
+  browser.page = { call: async (method, params) => { calls.push(method); if (method === 'Input.dispatchMouseEvent') assert.equal(params.button, 'right'); } };
+  const prepared = await browser.prepareUnread(browser.chatId(chat));
+  await browser.executeMessageAction(prepared); await prepared.cleanup();
+  assert.deepEqual(calls, ['status', 'action:unreadTarget', 'Input.dispatchMouseEvent', 'Input.dispatchMouseEvent', 'action:unreadPrepare', 'action:unreadCommit', 'action:release']);
+  calls.length = 0;
+  await browser.executeMessageAction({ args: { kind: 'edit', text: 'Changed' } });
+  assert.deepEqual(calls, ['action:editSelect', 'Input.insertText', 'action:editCommit']);
+});

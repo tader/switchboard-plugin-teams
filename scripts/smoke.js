@@ -1,6 +1,8 @@
 import fs from 'node:fs/promises';
 import assert from 'node:assert/strict';
 import { CDP, Page, findBrowser } from '../lib/cdp.js';
+import { teamsActions } from '../lib/actions-dom.js';
+import { actionsFixtureHTML, runActionsDOMSuite } from '../test/actions-dom-suite.js';
 import { teamsDOM, DEFAULT_SELECTORS } from '../lib/dom.js';
 import { fixtureHTML, runDOMSuite } from '../test/dom-suite.js';
 import { featuresFixtureHTML, runFeaturesDOMSuite } from '../test/features-dom-suite.js';
@@ -20,6 +22,7 @@ try {
   console.log(await runFeaturesDOMSuite(page, teamsDOM, DEFAULT_SELECTORS, featuresFixtureHTML));
   console.log(await runDiscoveryDOMSuite(page, teamsDOM, DEFAULT_SELECTORS, discoveryFixtureHTML));
   console.log(await runQuotesDOMSuite(page, teamsDOM, DEFAULT_SELECTORS, quotesFixtureHTML));
+  console.log(await runActionsDOMSuite(page, teamsActions, DEFAULT_SELECTORS, actionsFixtureHTML));
   adapter = await createAdapter({ dataDir: directory + '/adapter', settings: {} }, {
     createBrowser: () => ({ serial: fn => fn(), login: async () => ({}), dom: async () => ({ ready: true }), close: async () => {} }),
   });

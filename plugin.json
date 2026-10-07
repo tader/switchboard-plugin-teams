@@ -1,7 +1,7 @@
 {
   "id": "teams-web",
   "name": "Teams Web",
-  "version": "0.3.0",
+  "version": "0.4.0",
   "main": "index.js",
   "description": "Read Teams chats and unread messages, find people, and start conversations through a local browser, without Microsoft Graph.",
   "icon": "icon.svg",
