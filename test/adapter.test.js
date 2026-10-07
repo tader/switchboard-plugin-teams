@@ -3,7 +3,7 @@ import assert from 'node:assert/strict';
 import fs from 'node:fs/promises';
 import { EventEmitter } from 'node:events';
 import { Readable } from 'node:stream';
-import { createAdapter } from '../index.js';
+import { createAdapter } from '../legacy-index.js';
 
 async function fixture(t) {
   const dataDir = await fs.mkdtemp('/tmp/teams-adapter-');

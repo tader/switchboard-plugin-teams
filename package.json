@@ -1,12 +1,18 @@
 {
   "name": "switchboard-plugin-teams",
-  "version": "0.5.0",
+  "version": "0.7.0",
   "private": true,
   "type": "module",
-  "engines": { "node": ">=24" },
+  "engines": {
+    "node": ">=24"
+  },
   "scripts": {
     "test": "node --test test/*.test.js",
-    "smoke": "node scripts/smoke.js",
-    "signin": "node scripts/signin.js"
+    "smoke": "node --test test/api-*.test.js",
+    "signin": "node scripts/api-check.js",
+    "smoke:legacy": "node scripts/smoke.js",
+    "check:api": "node scripts/api-check.js",
+    "install:local": "node scripts/install-local.js",
+    "auth:export": "node scripts/auth-export.js"
   }
 }

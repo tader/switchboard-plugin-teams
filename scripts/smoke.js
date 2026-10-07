@@ -10,7 +10,7 @@ import { discoveryFixtureHTML, runDiscoveryDOMSuite } from '../test/discovery-do
 import { quotesFixtureHTML, runQuotesDOMSuite } from '../test/quotes-dom-suite.js';
 import { teamsExtended } from '../lib/extended-dom.js';
 import { extendedFixtureHTML, runExtendedDOMSuite, runRichEditDOMSuite, runChannelSearchDOMSuite } from '../test/extended-dom-suite.js';
-import { createAdapter } from '../index.js';
+import { createAdapter } from '../legacy-index.js';
 
 // Runs outside the Codex sandbox on the user's Mac. It sends only fixture
 // messages to a blank local page, never to Teams or any external recipient.
