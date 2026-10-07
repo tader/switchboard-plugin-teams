@@ -5,7 +5,7 @@ services: [teams-web]
 
 # Connecting Teams
 
-Teams 0.7.0 uses direct APIs with local browser sign-in or imported tokens. Browser sign-in uses Chrome or Edge only for authentication and renewal; imported-token connections use no browser on Switchboard.
+Teams 0.7.1 uses direct APIs with local browser sign-in or imported tokens. Browser sign-in uses Chrome or Edge only for authentication and renewal; imported-token connections use no browser on Switchboard.
 
 For local browser authentication, in Switchboard Connections, add Teams or reconnect your existing Teams connection once after upgrading from 0.5. Enter an account label and optionally your work email. Complete Microsoft sign-in in the dedicated browser window. `LOCAL-BROWSER` is a placeholder, not a code to enter at Microsoft. Each connection retains a separate browser session and encrypted API credentials.
 
@@ -21,7 +21,7 @@ npm run auth:export -- --out ~/teams-tokens.json --login-hint your.name@example.
 
 Complete Microsoft sign-in in the dedicated browser window. The script closes the browser and writes a compact JSON bundle with owner-only permissions (`0600`). It requires a new output filename, refuses existing files and symlinks, removes incomplete output on failure or interruption, and never prints tokens. It does not require a local Switchboard or send Teams messages. `TEAMS_BROWSER_PATH` overrides browser detection; `TEAMS_LOGIN_HINT` is an alternative to `--login-hint`.
 
-Install this plugin version on the central Switchboard. Add Teams or reconnect an existing connection, select **Import Teams tokens**, enter a label and paste the complete file contents into the secret bundle field. The plugin validates both token signatures, expected resources, matching tenant/account IDs and expiry, then exchanges the chat token and performs a read-only conversation request before accepting the connection. Switchboard encrypts accepted credentials; a failed import leaves an existing session intact. Delete the plaintext export file after import. The JSON contains bearer credentials; browser cookies remain on the authentication machine.
+Install this plugin version on the central Switchboard. Add Teams or reconnect an existing connection, select **Import Teams tokens**, enter a label and paste the complete file contents into the secret bundle field. The plugin checks bundle structure, resource/account metadata and expiry, then validates the access tokens through Teams: the auth service accepts the Skype token and confirms its account, and the conversation service accepts the chatsvcagg token. Microsoft validates their proprietary signatures; see [Microsoft access-token guidance](https://learn.microsoft.com/entra/identity-platform/access-tokens). No credentials are accepted before both checks succeed. Switchboard encrypts accepted credentials; a failed import leaves an existing session intact. Delete the plaintext export file after import. The JSON contains bearer credentials; browser cookies remain on the authentication machine.
 
 The central host never opens or discovers a browser for imported-token connections. This OAuth flow provides no refresh token, so renewal is manual. The derived chat token can renew over HTTP while both Microsoft access tokens remain fresh. When either access token approaches expiry or is rejected, export a replacement and reconnect the same central connection. Tenant/account IDs must match; reconnection preserves the profile and durable send ledger. A different account requires a separate connection.
 
@@ -33,7 +33,7 @@ npm run auth:export -- --silent --out ~/teams-tokens-renewed.json
 
 If Microsoft requires sign-in, repeat without `--silent`. The export profile is separate from diagnostic and Switchboard profiles. Existing browser connections can switch to token import through reconnect; selecting browser authentication again requires a browser on that Switchboard host.
 
-`getTeamsStatus` reports `authMode="tokens"`, expiry and `tokenImportRequired`. Expired or rejected access tokens produce `token_import_required` with re-import instructions. `openTeamsLogin` returns those instructions instead of opening a browser. Status and capability calls remain available after expiry. Read-only live export/import on your central host remains to be verified; fixture tests do not establish tenant or host compatibility.
+`getTeamsStatus` reports `authMode="tokens"`, expiry and `tokenImportRequired`. Expired or rejected access tokens produce `token_import_required` with re-import instructions. `openTeamsLogin` returns those instructions instead of opening a browser. Status and capability calls remain available after expiry. A real exported bundle has passed read-only authentication, account binding and conversation validation on the authentication machine. Verify import on your central host too; network access and host compatibility remain environment-specific.
 
 ## Operations
 

@@ -12,7 +12,7 @@ import { TeamsAPI, messagePayload } from '../lib/teams-api.js';
 import { requestJSON, chatOrigin, tokenClaims } from '../lib/api-http.js';
 import { AdapterError } from '../lib/errors.js';
 import { encodeTokenBundle } from '../lib/token-bundle.js';
-import { key, signedBundle } from './token-fixture.js';
+import { signedBundle, signedToken, proprietaryToken, serverAccepts } from './token-fixture.js';
 
 const thread = '19:test@thread.v2';
 const expiry = () => Date.now() + 3600_000;
@@ -24,16 +24,23 @@ async function fixture(t, { forbidBrowser = false, dataDir } = {}) {
   const response = value => new Response(JSON.stringify(value), { status: 200 });
   const fetcher = async (raw, options) => {
     const url = new URL(raw); requests.push({ url, ...options });
-    if (url.pathname.endsWith('/discovery/keys')) return response({ keys: [key] });
     if (url.pathname.endsWith('/authz')) {
       if (rejectAuthz) return new Response(null, { status: 401 });
       const token = options.headers.Authorization.slice(7);
-      return response({ tokens: { skypeToken: 'chat-' + (tokenClaims(token).oid ?? token.split('skype-')[1]), expiresIn: 3600 }, region: 'emea', regionGtms: {} });
+      if (!token.startsWith('skype-') && !serverAccepts(token)) return new Response(null, { status: 401 });
+      const claims = tokenClaims(token);
+      const chat = claims.oid ? signedToken('skype', { skypeid: `orgid:${claims.oid}`, tid: claims.tid }) : 'chat-' + token.split('skype-')[1];
+      return response({ tokens: { skypeToken: chat, expiresIn: 3600 }, region: 'emea', regionGtms: {} });
     }
     if (url.pathname.endsWith('/teams/users/me') && rejectDirectory) return new Response(null, { status: 401 });
+    if (url.pathname.endsWith('/teams/users/me')) {
+      const token = options.headers.Authorization.slice(7);
+      if (!token.startsWith('csa-') && !serverAccepts(token)) return new Response(null, { status: 401 });
+    }
     if (url.pathname.endsWith('/teams/users/me')) return response({ chats: [{ id: thread, title: 'Test chat', isRead: false, isOneOnOne: true, members: [], consumptionHorizon: { originalArrivalTime: Date.parse('2026-10-07T12:00:00Z') } }], teams: [], metadata: { isPartialData: false } });
     if (url.pathname.endsWith('/messages') && (options.method ?? 'GET') === 'GET') {
-      const self = options.headers.Authentication.split('chat-')[1];
+      const chat = options.headers.Authentication.slice('skypetoken='.length);
+      const self = tokenClaims(chat).skypeid?.replace(/^orgid:/, '') ?? chat.split('chat-')[1];
       return response({ messages: [{ id: '1', from: '8:orgid:' + self, content: 'Original', messagetype: 'Text', originalarrivaltime: '2026-10-07T12:01:00Z', version: 'v1', properties: {} }], _metadata: { backwardLink: pageLink } });
     }
     if (url.pathname.endsWith('/messages') && options.method === 'POST') {
@@ -209,7 +216,7 @@ test('re-import replaces cached credentials, preserves the ledger and invalidate
   assert.equal(old.disposed, false); assert.equal((await f.call(connection, '/status')).body.ready, true);
   const requestsBefore = f.requests.length;
   await assert.rejects(f.tokenAuth.connect({ config: { label: 'Other', tokenBundle: encodeTokenBundle(signedBundle({ oid: '33333333-3333-3333-3333-333333333333' })) }, connection }), { code: 'account_mismatch' });
-  assert.ok(f.requests.slice(requestsBefore).every(request => request.url.pathname.endsWith('/discovery/keys')));
+  assert.equal(f.requests.length, requestsBefore, 'account mismatches are rejected before any API calls');
   f.setRejectDirectory(true);
   await assert.rejects(f.tokenAuth.connect({ config: { label: 'Failed', tokenBundle: encodeTokenBundle(signedBundle()) }, connection }), { code: 'api_unauthorized' });
   f.setRejectDirectory(false); assert.equal((await f.call(connection, '/status')).body.ready, true);
@@ -287,4 +294,25 @@ test('browser connections can reconnect and switch authentication methods withou
   await assert.rejects(f.auth.poll({ pending: cancelled.pending }), { code: 'login_expired' });
   connection = await f.auth.poll({ pending: replacement.pending });
   assert.equal((await f.call(connection, '/chats')).status, 200);
+});
+
+test('Microsoft proprietary access-token signatures are validated by Teams before import succeeds', async t => {
+  const f = await fixture(t, { forbidBrowser: true });
+  const bundle = signedBundle();
+  for (const service of ['skype', 'chatsvcagg']) bundle.tokens[service].value = proprietaryToken(service);
+  const connection = await f.tokenAuth.connect({ config: { label: 'Central', tokenBundle: encodeTokenBundle(bundle) } });
+  assert.equal((await f.call(connection, '/chats')).status, 200);
+  assert.ok(!f.requests.some(request => request.url.pathname.endsWith('/discovery/keys')), 'clients do not verify Microsoft access-token signatures');
+  for (const service of ['skype', 'chatsvcagg']) {
+    const forged = structuredClone(bundle); forged.tokens[service].value += '-tampered';
+    await assert.rejects(f.tokenAuth.connect({ config: { label: 'Bad', tokenBundle: encodeTokenBundle(forged) }, connection }), { code: 'api_unauthorized' });
+    assert.equal((await f.call(connection, '/status')).body.ready, true);
+  }
+  assert.equal(f.authCalls.length, 0);
+});
+
+test('the identity returned by the trusted Teams auth service must match the imported account', async () => {
+  const credentials = { ...signedBundle(), authMode: 'tokens' };
+  const fetcher = async () => new Response(JSON.stringify({ tokens: { skypeToken: signedToken('skype', { skypeid: 'orgid:33333333-3333-3333-3333-333333333333' }), expiresIn: 3600 }, region: 'emea' }));
+  await assert.rejects(exchangeChatToken(credentials, fetcher), { code: 'account_mismatch' });
 });

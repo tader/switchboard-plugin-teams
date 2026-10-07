@@ -221,7 +221,7 @@ export async function createAdapter(ctx, {
           const profile = connection?.credentials?.profile ?? randomUUID();
           const entry = entryFor(profile);
           try {
-            const bundle = await validateTokenBundle(config.tokenBundle, connection?.credentials, entry.session.fetcher);
+            const bundle = await validateTokenBundle(config.tokenBundle, connection?.credentials);
             const credentials = await entry.session.exchange({ ...bundle, profile }, entry.session.fetcher);
             entry.session.adopt(credentials);
             await entry.api.directory(true);
