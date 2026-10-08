@@ -12,8 +12,8 @@ import { richContent } from './lib/content.js';
 import { openapi } from './lib/api-openapi.js';
 import { validateTokenBundle } from './lib/token-bundle.js';
 
-const capabilities = { ...apiCapabilities, supported: [...apiCapabilities.supported, 'triage_inbox', 'batch_reply_contexts', 'batch_chat_replies', 'quoted_chat_replies', 'channel_thread_reads'],
-  unsupported: apiCapabilities.unsupported.filter(name => name !== 'quoted_replies'), triage: triageCapabilities };
+const capabilities = { ...apiCapabilities, supported: [...apiCapabilities.supported, 'triage_inbox', 'batch_reply_contexts', 'batch_chat_replies', 'quoted_chat_replies', 'channel_thread_reads', 'chat_mark_read', 'chat_mark_unread'],
+  unsupported: apiCapabilities.unsupported.filter(name => !['quoted_replies', 'mark_unread'].includes(name)), triage: triageCapabilities };
 
 const profilePath = (dataDir, profile) => {
   if (typeof profile !== 'string' || !/^[a-f0-9]{8}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{12}$/.test(profile)) throw new AdapterError('invalid_profile', 'Invalid connection profile.', 400);
@@ -113,6 +113,8 @@ export async function createAdapter(ctx, {
         const input = await body(request, ['targets', 'contextLimit']); operation = () => triage.contexts(input, controller.signal);
       } else if (request.method === 'POST' && url.pathname === '/triage/replies') {
         const input = await body(request, ['replies']); operation = () => triage.replies(input, { signal: controller.signal, checkCancelled });
+      } else if (request.method === 'POST' && url.pathname === '/triage/read-state') {
+        const input = await body(request, ['updates']); operation = () => triage.readState(input, { signal: controller.signal, checkCancelled });
       }
       else if (request.method === 'GET' && url.pathname === '/unread/messages') {
         const max = integer(url, 'maxChats', 3, 1, 5), limit = integer(url, 'limitPerChat', 50, 1, 100); operation = () => api.unread(max, limit);
@@ -156,8 +158,8 @@ export async function createAdapter(ctx, {
         checkCancelled(); const result = await operation();
         // Batch errors remain per item, but must also update auth status so a
         // laptop sync does not mistake rejected credentials for healthy tokens.
-        if (url.pathname === '/triage/replies' && session.credentials?.authMode === 'tokens') {
-          for (const item of result.items) for (const stage of [item.send, item.read]) if (stage?.error?.code === 'api_unauthorized') {
+        if (['/triage/replies', '/triage/read-state'].includes(url.pathname) && session.credentials?.authMode === 'tokens') {
+          for (const item of result.items) for (const stage of [item, item.send, item.read]) if (stage?.error?.code === 'api_unauthorized') {
             const error = importRequired(); session.authError = error;
             stage.error = { code: error.code, message: error.message };
           }

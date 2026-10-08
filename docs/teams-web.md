@@ -5,7 +5,7 @@ services: [teams-web]
 
 # Connecting Teams
 
-Teams 0.9.0 uses direct APIs with local browser sign-in or imported tokens. Browser sign-in captures a refresh token in Chrome or Edge and closes the browser. Access tokens then renew over HTTP without a client secret. Imported-token connections use no browser on Switchboard.
+Teams 0.10.0 uses direct APIs with local browser sign-in or imported tokens. Browser sign-in captures a refresh token in Chrome or Edge and closes the browser. Access tokens then renew over HTTP without a client secret. Imported-token connections use no browser on Switchboard.
 
 For local browser authentication, in Switchboard Connections, add Teams or reconnect your existing Teams connection once after upgrading from 0.5. Enter an account label and optionally your work email. Complete Microsoft sign-in in the dedicated browser window. `LOCAL-BROWSER` is a placeholder, not a code to enter at Microsoft. Each connection retains a separate browser session and encrypted API credentials.
 
@@ -51,10 +51,14 @@ It checks expiry, tries server-side HTTP renewal first, and acquires and uploads
 
 ## Operations
 
-Use `getTeamsCapabilities` for the current operation subset. Chat and channel listing, unread windows, chat messages, paged chat/channel history, exact-email lookup, existing one-to-one chat resolution, plain/formatted chat sends, edits, deletion and reactions are implemented. Name search, message search, new chats, quoted replies, mentions, marking unread and channel-thread operations are not yet migrated. Refresh old conversation IDs through the listing operations. API reads do not send read markers.
+Use `getTeamsCapabilities` for the current operation subset. Chat and channel listing, unread windows, chat messages, paged chat/channel history, exact-email lookup, existing one-to-one chat resolution, plain/formatted chat sends, edits, deletion and reactions are implemented. Name search, message search, new chats, mentions, attachments and channel-thread writes are not yet migrated. Native quoted chat replies and bounded channel-thread reads are available through triage. Refresh old conversation IDs through the listing operations. API reads do not send read markers.
 
 For every send or mutation, use a unique `idempotencyKey` and reuse it for retries. `accepted_by_api` is server acceptance, not a delivery receipt. On `send_uncertain` or `mutation_uncertain`, inspect Teams before further action; using a new key can duplicate the action. Edits/deletion require your own exact message ID and current `expectedText`. Concurrent external changes cannot be protected atomically by the private API. Live writes still require validation in a designated test chat.
 
 Person lookup requires an exact email or UPN. `startTeamsConversation` only resolves an existing one-to-one chat; it does not create one. Optional text sends to that resolved chat. History follows `nextCursor`; keep limit/format unchanged. Cursors expire after 30 minutes and on plugin reload. Unread reads are bounded windows, not an account-wide archive. Rich HTML returned by reads is untrusted data.
 
 For local browser authentication, the browser profile persists in plugin data. Both methods retain a send ledger in plugin data. Protect this directory: it contains a Microsoft browser session and may contain message results. Disconnecting deletes both. Token credentials are encrypted by Switchboard; diagnostics do not expose them. This version was written by OpenAI Codex at Thomas de Ruiter's request. The original compatibility probe passed real reads; the new Node adapter is covered by fixture tests and includes a read-only `npm run check:api` diagnostic.
+
+`setTeamsReadState` accepts explicit selected-message read/unread updates using a triage target or exact conversation/message locator. Read includes the selected message; unread includes it in the unread suffix. Each update requires a durable idempotency key. Check `capabilities.triage.readState` for separate chat/channel read/unread gates; chat read/unread are enabled and live-verified; channel gates return `deferred/protocol_unverified`. The transport preserves a later ordinary horizon while advancing an explicit unread bookmark only through the selected message. Native requests and browser-closed readback passed in a user-designated regular chat. Private endpoints have no atomic guard against external changes. See [protocol status](triage-protocol.md).
+
+Live diagnostic checks (`check:api`, `check:triage`, `check:auth-refresh`) share `.local-profile/token-export/diagnostic-session.json`. The first successful run saves credentials in this Git-ignored, owner-only file; subsequent checks reuse them and renew over HTTP. `--silent` prevents interactive sign-in. `--capture` explicitly repeats browser capture. Run diagnostics sequentially so token rotations remain consistent.

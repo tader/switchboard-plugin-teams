@@ -1,8 +1,8 @@
 # Teams API plugin for Switchboard
 
-Version 0.9.0 supports direct Teams private API calls with local browser sign-in or imported tokens. Chrome or Edge captures renewal credentials during normal Teams sign-in, then closes. Access tokens renew through HTTP using the existing Teams public client ID, without a client secret or browser. A central Switchboard can import tokens from another machine and run without Chrome or Edge. No Go, Electron, Microsoft Graph registration, npm dependencies, or persistent Teams tab is required. Node 24+ is required.
+Version 0.10.0 supports direct Teams private API calls with local browser sign-in or imported tokens. Chrome or Edge captures renewal credentials during normal Teams sign-in, then closes. Access tokens renew through HTTP using the existing Teams public client ID, without a client secret or browser. A central Switchboard can import tokens from another machine and run without Chrome or Edge. No Go, Electron, Microsoft Graph registration, npm dependencies, or persistent Teams tab is required. Node 24+ is required.
 
-For unread triage, prefer `getTeamsTriageInbox`, `getTeamsReplyContexts` and `replyTeamsBatch`. The inbox groups chats and channel threads; native quoted chat replies have durable duplicate protection. **Channel replies and automatic read updates remain disabled pending live protocol verification.** See [triage protocol status](docs/triage-protocol.md).
+For unread triage, prefer `getTeamsTriageInbox`, `getTeamsReplyContexts` and `replyTeamsBatch`. The inbox groups chats and channel threads; native quoted chat replies have durable duplicate protection. `setTeamsReadState` marks chat messages read or unread at an exact selected boundary. **Channel replies, channel read state and automatic read-after-reply remain disabled pending live protocol verification.** See [triage protocol status](docs/triage-protocol.md).
 
 The service ID remains `teams-web`, and the existing browser authentication method remains `browser`, so existing Switchboard connections can be reconnected in place. The previous DOM adapter is retained in `legacy-index.js` for regression testing; production does not invoke it.
 
@@ -76,7 +76,7 @@ TEAMS_LOGIN_HINT=Thomas.De-Ruiter@dsm-firmenich.com npm run check:api -- --silen
 
 `npm test` runs unit and adapter tests, including the retained DOM regression tests. `npm run smoke` runs the new API adapter and authentication tests with fixtures; neither command contacts Teams or sends real messages.
 
-`check:api` performs real Microsoft authentication, closes Chrome, exchanges the chat token, then reads your profile, conversation list and five recent messages from one chat. It prints only PASS markers and token expiry, never tokens or message content. The second command checks whether the saved session can obtain tokens without interactive sign-in. Both use a separate diagnostic profile at `.local-profile/api/auth-browser`; they do not create a Switchboard connection or persist API tokens. Set `TEAMS_BROWSER_PATH` to override browser detection. A successful silent check demonstrates current session reuse, not a guarantee about future company sign-in policy.
+`check:api` reuses the shared diagnostic session, renews expired tokens over HTTP, then reads your profile, conversation list and five recent messages from one chat. It prints only PASS markers and token expiry, never tokens or message content. The second command reuses the same session without interactive sign-in. `check:api`, `check:triage` and `check:auth-refresh` share `.local-profile/token-export/diagnostic-session.json` and its persistent browser profile. The first successful run saves the session; subsequent checks reuse it and renew over HTTP. The session file contains credentials, is owner-readable/writable only (0600), and is excluded from Git. These checks do not create a Switchboard connection. Use `--capture` only when explicitly testing a fresh browser capture. Set `TEAMS_BROWSER_PATH` to override browser detection. A successful silent check demonstrates current session reuse, not a guarantee about future company sign-in policy.
 
 After installing, run `getTeamsStatus`, `getTeamsCapabilities`, `listTeamsChats` and `readTeamsMessages` in Switchboard. Chrome should remain closed for data calls with fresh tokens. Verify an intended write manually in a designated test chat before depending on write operations. No real messages were sent during this implementation.
 
@@ -90,13 +90,13 @@ The production acquisition and HTTP renewal helpers also have an isolated diagno
 npm run check:auth-refresh -- --login-hint your.name@example.com
 ```
 
-Complete normal Teams sign-in in the dedicated browser. The diagnostic captures a refresh token only from a successful Microsoft token exchange for the existing Teams web client, closes the browser and waits for its process to exit, then requests fresh Skype and chatsvcagg access tokens using HTTP, with no client secret or cookies. It follows refresh-token rotation between the two requests. It validates the renewed credentials through the Teams chat-token exchange, confirms the account through a profile read, and reads the conversation list. It prints only PASS markers, sanitized errors and access/chat-token expiry; it does not print tokens or message content, export a bundle, or send messages.
+Complete normal Teams sign-in in the dedicated browser. With `--capture`, the diagnostic captures a refresh token only from a successful Microsoft token exchange for the existing Teams web client, closes the browser and waits for its process to exit, then requests fresh Skype and chatsvcagg access tokens using HTTP, with no client secret or cookies. It follows refresh-token rotation between the two requests. It validates the renewed credentials through the Teams chat-token exchange, confirms the account through a profile read, and reads the conversation list. It prints only PASS markers, sanitized errors and access/chat-token expiry; it does not print tokens or message content, export a bundle, or send messages.
 
 `--login-hint` identifies the account to validate through Teams after renewal; it does not prefill the Teams web login. `TEAMS_LOGIN_HINT` is an alternative. `TEAMS_BROWSER_PATH` overrides browser detection. A later `npm run check:auth-refresh -- --silent --login-hint your.name@example.com` attempts capture headlessly using the saved diagnostic session; success depends on Microsoft session and tenant policy.
 
 The browser profile is separate at `.local-profile/refresh-check/auth-browser`. Before each check, only Teams app caches in that profile are cleared to force a network token exchange; Microsoft login cookies are retained. The diagnostic keeps captured credentials in memory, but Teams itself can cache credentials in this browser profile. Protect it like a logged-in browser session.
 
-This command does not change existing Switchboard connections. Fixture success is not live compatibility evidence. A successful live run establishes capture, browser-closed HTTP renewal, account binding and the two API reads for that account on that machine. It does not establish refresh-token lifetime, recovery after its expiry, cookie-only renewal, or central-host compatibility. A captured rotated token can inherit an earlier SPA expiry; capture time is not a new 24-hour lifetime.
+By default, this command reuses the shared diagnostic session and forces an HTTP renewal. Add `--capture` to repeat the browser-capture compatibility probe. Neither mode changes existing Switchboard connections. Fixture success is not live compatibility evidence. A successful live run establishes capture, browser-closed HTTP renewal, account binding and the two API reads for that account on that machine. It does not establish refresh-token lifetime, recovery after its expiry, cookie-only renewal, or central-host compatibility. A captured rotated token can inherit an earlier SPA expiry; capture time is not a new 24-hour lifetime.
 
 On 2026-10-08, this diagnostic passed real browser capture after Microsoft Authenticator approval, browser-process exit, HTTP renewal of both Microsoft access tokens, chat-token exchange, account binding, profile and conversation reads on the user's Mac. Headless saved-session reacquisition has not passed. See [validation status](ROADMAP.md).
 
@@ -121,7 +121,8 @@ There is no fixed manual-login interval: Microsoft session expiry, MFA, revocati
 | Native quoted chat replies | `replyTeamsBatch`; existing `replyToMessageId` route parameter remains unsupported |
 | Channel thread reads | Through triage inbox/context helpers |
 | Channel replies and read-after-reply | Implemented behind disabled protocol-verification gates |
-| Message search, mentions, mark unread, attachments, new conversations | Not yet migrated |
+| Selected-message read/unread | `setTeamsReadState` supports chat read/unread; channel gates defer |
+| Message search, mentions, attachments, new conversations | Not yet migrated |
 
 Unsupported operations are removed from the advertised OpenAPI schema; saved calls fail explicitly. `getTeamsCapabilities` reports the supported subset. Conversation data can be partial, and retained history is not a guaranteed complete archive. API reads do not send read markers.
 
@@ -142,7 +143,17 @@ Reply targets and cursors are account-bound, expire after 30 minutes or plugin r
 
 Currently successful replies return `read.status="deferred"`, `reason="protocol_unverified"`. The durable read stage is implemented and tested: after protocol verification it can retry read failures without resending, preserves later arrivals/newer known horizons, and defers channel-wide advancement while sibling threads remain unhandled or coverage is incomplete. An old thread root never proves coverage of omitted unread replies. No automatic marking is enabled in this release.
 
-Run `npm run check:triage -- --silent` for a read-only live check using the saved export browser session, or omit `--silent` for interactive authentication. It prints counts and sanitized errors, sends no messages, and writes no read markers.
+`setTeamsReadState` (`POST /triage/read-state`) accepts 1–10 explicit updates. `read` means read through the selected message; `unread` leaves that message and later messages unread. Use an individual message's `replyTarget` as `target`, or an exact `conversationId` and `messageId`; channel locators also require `parentMessageId`.
+
+```json
+{"updates":[{"target":"<message replyTarget>","state":"unread","idempotencyKey":"review-unread-001"}]}
+```
+
+Keep the original input and key for retries. Results contain `status` (`updated`, `unchanged`, `deferred`, `uncertain`, `failed` or `not_attempted`) and the input locator/key. Successful results identify `throughMessageId` or `fromMessageId` and `observedReadBoundary`; completed retries add `replayed=true`. Uncertain writes stop the batch and are never resent. Explicit unread intents durably supersede older automatic read grants, including across restarts. Incomplete read prefixes and unhandled sibling channel threads defer.
+
+Check `capabilities.triage.readState.chat.read`, `.chat.unread`, `.channel.read` and `.channel.unread`, or each group's `canMarkRead`/`canMarkUnread`. **Chat read and unread are enabled and live-verified; both channel gates remain false** and return `deferred/protocol_unverified`. The transport keeps the ordinary horizon monotonic and changes a separate bookmark for explicit unread intent. Reading a prefix advances that bookmark instead of clearing later unread messages. A cleared zero bookmark falls back to the ordinary horizon. Private endpoints provide no atomic guard against concurrent external changes. See [native capture and remaining verification](docs/triage-protocol.md).
+
+Run `npm run check:triage -- --silent` for a read-only live check using the saved export browser session, or omit `--silent` for interactive authentication. It reuses the shared diagnostic session, prints counts and sanitized errors, sends no messages, and writes no read markers.
 
 ## Writes and history
 
