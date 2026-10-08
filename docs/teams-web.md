@@ -5,7 +5,7 @@ services: [teams-web]
 
 # Connecting Teams
 
-Teams 0.8.0 uses direct APIs with local browser sign-in or imported tokens. Browser sign-in captures a refresh token in Chrome or Edge and closes the browser. Access tokens then renew over HTTP without a client secret. Imported-token connections use no browser on Switchboard.
+Teams 0.8.1 uses direct APIs with local browser sign-in or imported tokens. Browser sign-in captures a refresh token in Chrome or Edge and closes the browser. Access tokens then renew over HTTP without a client secret. Imported-token connections use no browser on Switchboard.
 
 For local browser authentication, in Switchboard Connections, add Teams or reconnect your existing Teams connection once after upgrading from 0.5. Enter an account label and optionally your work email. Complete Microsoft sign-in in the dedicated browser window. `LOCAL-BROWSER` is a placeholder, not a code to enter at Microsoft. Each connection retains a separate browser session and encrypted API credentials.
 
@@ -36,6 +36,16 @@ If Microsoft requires sign-in, repeat without `--silent`. The export profile is 
 `getTeamsStatus` reports `authMode="tokens"`, expiry and `tokenImportRequired`. `renewalAvailable` and `renewalMethod="http_refresh_token"` confirm refresh support. Terminal refresh-token rejection produces `token_import_required` with re-import instructions; transient renewal failures remain retryable. `openTeamsLogin` returns those instructions instead of opening a browser. Status and capability calls remain available after expiry. A real exported bundle has passed read-only authentication, account binding and conversation validation on the authentication machine. Verify import on your central host too; network access and host compatibility remain environment-specific.
 
 Microsoft limits SPA refresh tokens to 24 hours; rotations inherit the original expiry. Re-export may therefore be needed daily or sooner under tenant policy. Cookie-only recovery is not implemented. See [Microsoft refresh-token lifetime](https://learn.microsoft.com/en-us/entra/identity-platform/refresh-tokens).
+
+## Update central tokens from your laptop
+
+Set `SWITCHBOARD_TOKEN` to a full-access Switchboard API token. From the plugin checkout on your laptop, run:
+
+```sh
+npm run auth:sync -- --url https://switchboard.example.com --connection your-teams-connection --login-hint your.name@example.com
+```
+
+It checks expiry, tries server-side HTTP renewal first, and acquires and uploads a replacement bundle through reconnect only when fresh authentication is needed. A read-only chat-list request can trigger server renewal; its data is discarded. Tokens stay in memory, and the connection and ledger are preserved. Saved-session browser authentication is attempted first; a sign-in window opens if required. Add `--silent` for scheduled runs or `--force` to replace healthy credentials. An in-progress sign-in is never replaced. Set `SWITCHBOARD_URL`, `TEAMS_CONNECTION` and `TEAMS_LOGIN_HINT` to omit their flags. See the checkout README for details. The server needs plugin 0.8.0 or later.
 
 ## Operations
 

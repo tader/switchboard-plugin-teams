@@ -1,6 +1,6 @@
 # Teams API plugin for Switchboard
 
-Version 0.8.0 supports direct Teams private API calls with local browser sign-in or imported tokens. Chrome or Edge captures renewal credentials during normal Teams sign-in, then closes. Access tokens renew through HTTP using the existing Teams public client ID, without a client secret or browser. A central Switchboard can import tokens from another machine and run without Chrome or Edge. No Go, Electron, Microsoft Graph registration, npm dependencies, or persistent Teams tab is required. Node 24+ is required.
+Version 0.8.1 supports direct Teams private API calls with local browser sign-in or imported tokens. Chrome or Edge captures renewal credentials during normal Teams sign-in, then closes. Access tokens renew through HTTP using the existing Teams public client ID, without a client secret or browser. A central Switchboard can import tokens from another machine and run without Chrome or Edge. No Go, Electron, Microsoft Graph registration, npm dependencies, or persistent Teams tab is required. Node 24+ is required.
 
 The service ID remains `teams-web`, and the existing browser authentication method remains `browser`, so existing Switchboard connections can be reconnected in place. The previous DOM adapter is retained in `legacy-index.js` for regression testing; production does not invoke it.
 
@@ -42,6 +42,26 @@ npm run auth:export -- --silent --out ~/teams-tokens-renewed.json
 If Microsoft requires sign-in, repeat without `--silent`. The export profile is separate from diagnostic and Switchboard profiles. Existing browser connections can switch to token import through reconnect; selecting browser authentication again requires a browser on that Switchboard host.
 
 `getTeamsStatus` reports `authMode="tokens"`, expiry and `tokenImportRequired`. `renewalAvailable` and `renewalMethod="http_refresh_token"` confirm refresh support. Terminal refresh-token rejection produces `token_import_required` with re-import instructions; transient renewal failures remain retryable. `openTeamsLogin` returns those instructions instead of opening a browser. Status and capability calls remain available after expiry. A real exported bundle has passed read-only authentication, account binding and conversation validation on the authentication machine. Verify import on your central host too; network access and host compatibility remain environment-specific.
+
+## Sync tokens from your laptop
+
+Set `SWITCHBOARD_TOKEN` to a full-access Switchboard API token, then run from this checkout on your laptop:
+
+```sh
+npm run auth:sync -- --url https://switchboard.example.com --connection your-teams-connection --login-hint your.name@example.com
+```
+
+The connection can be its Switchboard name or ID. The command checks auth expiry and readiness. If tokens have more than two minutes remaining, it exits without a browser or upload. Otherwise it first makes a read-only chat-list request so Switchboard can attempt its existing HTTP renewal; returned chat data is discarded. If fresh sign-in is required, it acquires tokens using a dedicated local browser profile, closes the browser, sends the version 2 bundle through Switchboard's reconnect API, and verifies readiness. Reconnect preserves the connection and ledger and validates the same Microsoft account. The account label is retained. Bundles stay in memory; no plaintext export file is created or tokens printed.
+
+The command tries the saved browser session headlessly first, then opens a sign-in window if Microsoft requires interaction. Use `--silent` for scheduled runs: it exits with an error instead of opening an interactive window. Use `--force` to acquire and upload replacement credentials even when server tokens are healthy. An existing sign-in in progress is never replaced. Transient server renewal failures stop without browser acquisition; rerun later. Uploads are not automatically retried.
+
+You can set `SWITCHBOARD_URL`, `TEAMS_CONNECTION` and `TEAMS_LOGIN_HINT` instead of supplying those flags. With these variables and `SWITCHBOARD_TOKEN` configured, the command is simply:
+
+```sh
+npm run auth:sync
+```
+
+`TEAMS_BROWSER_PATH` selects Chrome or Edge. Each server/connection has its own local profile under `.local-profile/token-sync/`. The server needs the Teams plugin version 0.8.0 or later. It can run without a browser. Remote URLs require HTTPS; HTTP is accepted for localhost. Switchboard's reconnect API requires full access, so connection-limited or MCP-only tokens cannot perform this task. The command reports access/chat-token expiry; it does not infer a refresh token's remaining lifetime from capture time. Silent browser recovery and server connectivity depend on your environment and tenant policy.
 
 ## Test without sending messages
 
