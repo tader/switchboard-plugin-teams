@@ -19,7 +19,7 @@ const thread = '19:test@thread.v2';
 const expiry = () => Date.now() + 3600_000;
 const bundle = profile => ({ profile, authVersion: 1, identity: { tenant: '11111111-1111-1111-1111-111111111111', oid: profile, name: 'Test user', email: 'test@example.com' },
   tokens: { skype: { value: 'skype-' + profile, expiresAt: expiry() }, chatsvcagg: { value: 'csa-' + profile, expiresAt: expiry() } } });
-async function fixture(t, { forbidBrowser = false, dataDir, peerMessages = false, readProtocols = { chat: { read: false, unread: false }, channel: { read: false, unread: false } } } = {}) {
+async function fixture(t, { forbidBrowser = false, dataDir, peerMessages = false, parity = false, readProtocols = { chat: { read: false, unread: false }, channel: { read: false, unread: false } } } = {}) {
   const directory = dataDir ?? await fs.mkdtemp(path.join(os.tmpdir(), 'teams-api-test-'));
   const requests = [], sessions = new Map(), authCalls = []; let handler, failSend = false, pageLink = null, authFailure = false, rejectDirectory = false, rejectAuthz = false, refreshFailure = null, failSecondRefresh = false, refreshCount = 0;
   const response = value => new Response(JSON.stringify(value), { status: 200 });
@@ -28,8 +28,8 @@ async function fixture(t, { forbidBrowser = false, dataDir, peerMessages = false
     if (url.hostname === 'login.microsoftonline.com') {
       refreshCount++;
       if (refreshFailure || failSecondRefresh && refreshCount % 2 === 0) return new Response(JSON.stringify({ error: refreshFailure || 'temporarily_unavailable', error_description: 'private-provider-secret' }), { status: 400 });
-      const form = new URLSearchParams(options.body), service = form.get('scope').startsWith('https://api.spaces.skype.com/') ? 'skype' : 'chatsvcagg';
-      return response({ access_token: signedToken(service), token_type: 'Bearer', expires_in: 3600, refresh_token: `fixture-rotated-${refreshCount}` });
+      const form = new URLSearchParams(options.body), service = form.get('scope').startsWith('https://substrate.office.com/') ? 'substrate' : form.get('scope').startsWith('https://api.spaces.skype.com/') ? 'skype' : 'chatsvcagg';
+      return response({ access_token: service === 'substrate' ? signedToken('skype', { aud: 'https://substrate.office.com' }) : signedToken(service), token_type: 'Bearer', expires_in: 3600, refresh_token: `fixture-rotated-${refreshCount}` });
     }
     if (url.pathname.endsWith('/authz')) {
       if (rejectAuthz) return new Response(null, { status: 401 });
@@ -43,6 +43,13 @@ async function fixture(t, { forbidBrowser = false, dataDir, peerMessages = false
     if (url.pathname.endsWith('/teams/users/me')) {
       const token = options.headers.Authorization.slice(7);
       if (!token.startsWith('csa-') && !serverAccepts(token)) return new Response(null, { status: 401 });
+    }
+    if (parity) {
+      if (url.pathname.endsWith('/teams/users/me')) return response({ chats: [{ id: thread, isOneOnOne: true, members: [] }], teams: [{ channels: [{ id: '19:channel@thread.tacv2', isMember: true }] }] });
+      if (url.hostname === 'substrate.office.com') return url.pathname.endsWith('/suggestions') ? response({ Groups: [{ Type: 'People', Suggestions: [{ MRI: '8:orgid:33333333-3333-3333-3333-333333333333', DisplayName: 'Peer', EmailAddresses: ['peer@example.com'] }] }] }) : response({ EntitySets: [{ ResultSets: [{ Results: [{ Source: { WebUrl: `https://teams.microsoft.com/l/message/${encodeURIComponent(thread)}/100`, Preview: 'Hit' } }], MoreResultsAvailable: false }] }] });
+      if (decodeURIComponent(url.pathname).includes('/users/peer@example.com/')) return response({ value: { mri: '8:orgid:33333333-3333-3333-3333-333333333333', displayName: 'Peer', email: 'peer@example.com' } });
+      if (url.pathname.endsWith('/messages/100')) return response({ id: '100', content: 'Root', messagetype: 'Text', from: '8:orgid:peer', version: 'v1' });
+      if (url.pathname.endsWith('/messages') && (options.method ?? 'GET') === 'GET') return response({ messages: [{ id: '100', content: 'Root', messagetype: 'Text', from: '8:orgid:peer' }], _metadata: {} });
     }
     if (url.pathname.endsWith('/teams/users/me')) return response({ chats: [{ id: thread, title: 'Test chat', isRead: false, isOneOnOne: true, members: [], consumptionHorizon: { originalArrivalTime: Date.parse('2026-10-07T12:00:00Z') } }], teams: [], metadata: { isPartialData: false } });
     if (url.pathname.endsWith('/messages') && (options.method ?? 'GET') === 'GET') {
@@ -193,8 +200,8 @@ test('legacy connections expose reconnect guidance and migration gaps without op
   await assert.rejects(f.call(connection, '/chats'), { code: 'signin_required' });
   assert.equal(f.authCalls.length, 0);
   const fresh = await f.connect();
-  assert.equal((await f.call(fresh, '/search/messages?query=test')).status, 501);
-  assert.ok(!f.instance.services[0].openapi.paths['/search/messages']);
+  await assert.rejects(f.call(fresh, '/search/messages?query=test'), { code: 'search_token_required' });
+  assert.ok(f.instance.services[0].openapi.paths['/search/messages']);
 });
 
 test('triage HTTP routes validate, bind targets to profiles and preserve accepted replies across reload', async t => {
@@ -235,7 +242,7 @@ test('API writes preserve duplicate protection, quarantine uncertain sends and v
   assert.equal((await f.call(connection, endpoint, 'POST', uncertain)).body.error.code, 'send_uncertain');
   const count = f.requests.length;
   assert.equal((await f.call(connection, endpoint, 'POST', uncertain)).body.error.code, 'send_uncertain'); assert.equal(f.requests.length, count);
-  assert.equal((await f.call(connection, endpoint, 'POST', { ...input, replyToMessageId: '1' })).status, 501);
+  assert.equal((await f.call(connection, endpoint, 'POST', { ...input, replyToMessageId: '1' })).body.error.code, 'idempotency_conflict');
   assert.equal((await f.call(connection, endpoint, 'POST', { ...input, unexpected: true })).status, 400);
   const edit = await f.call(connection, endpoint + '/1', 'PATCH', { text: 'Changed', expectedText: 'Original', idempotencyKey: 'edit-test-0001' });
   assert.equal(edit.body.status, 'accepted_by_api');
@@ -279,7 +286,7 @@ test('transport redacts remote errors, rejects untrusted regional hosts, and for
   assert.throws(() => chatOrigin({ region: 'emea', regionGtms: { chatService: 'https://evil.example' } }), { code: 'api_region_invalid' });
   const payload = messagePayload({ content: [{ type: 'paragraph', runs: [{ text: '<script>', marks: ['bold'] }] }] }, 'Test');
   assert.equal(payload.content, '<p><strong>&lt;script&gt;</strong></p>');
-  assert.throws(() => messagePayload({ content: [{ type: 'paragraph', runs: [{ mention: { email: 'person@example.com', name: 'Person' } }] }] }, 'Test'), { code: 'api_operation_unsupported' });
+  assert.throws(() => messagePayload({ content: [{ type: 'paragraph', runs: [{ mention: { email: 'person@example.com', name: 'Person' } }] }] }, 'Test'), { code: 'mention_unresolved' });
   let tokenHeader;
   await exchangeChatToken(bundle('profile'), async (_url, options) => { tokenHeader = options.headers; return new Response(JSON.stringify({ tokens: { skypeToken: 'chat', expiresIn: 3600 }, region: 'emea' })); });
   assert.equal(tokenHeader.Authorization, 'Bearer skype-profile');
@@ -466,4 +473,30 @@ test('flat unread uses the ordinary horizon after a cleared bookmark and preserv
   const unknown = await api.unread();
   assert.equal(unknown.chats[0].boundaryFound, false);
   assert.equal(unknown.chats[0].recentMessages.length, 3);
+});
+
+
+test('restored parity routes acquire search tokens before host persistence and retain recipient/quote duplicate protection', async t => {
+  const f = await fixture(t, { parity: true, forbidBrowser: true });
+  const connection = await f.tokenAuth.connect({ config: { tokenBundle: encodeTokenBundle({ ...signedBundle(), renewal: renewal() }) } });
+  const people = await f.call(connection, '/people?query=Peer');
+  assert.equal(people.body.items[0].email, 'peer@example.com');
+  assert.ok(connection.credentials.tokens.substrate);
+  assert.equal(connection.credentials.renewal.value, 'fixture-rotated-3');
+  const results = await f.call(connection, '/search/messages?query=test');
+  const opened = await f.call(connection, '/search/messages/open', 'POST', { resultId: results.body.items[0].resultId });
+  assert.equal(opened.body.selectedMessage.id, '100');
+  const quote = { text: 'Reply', replyToMessageId: '100', idempotencyKey: 'direct-quote-key' };
+  const endpoint = `/chats/${opened.body.chatId}/messages`;
+  assert.equal((await f.call(connection, endpoint, 'POST', quote)).body.status, 'accepted_by_api');
+  assert.equal((await f.call(connection, endpoint, 'POST', quote)).body.replayed, true);
+  const first = { email: 'peer@example.com', text: 'First', idempotencyKey: 'first-conversation-key' };
+  assert.equal((await f.call(connection, '/conversations', 'POST', first)).body.messageSent, true);
+  assert.equal((await f.call(connection, '/conversations', 'POST', first)).body.replayed, true);
+  const channelId = (await f.call(connection, '/channels')).body.items[0].id;
+  assert.equal((await f.call(connection, `/channels/${channelId}/threads`)).body.items[0].id, '100');
+  assert.equal((await f.call(connection, `/channels/${channelId}/threads/100/messages`)).body.root.id, '100');
+  assert.equal((await f.call(connection, `/channels/${channelId}/threads/100/history?format=ndjson`)).body.parentMessageId, '100');
+  assert.equal((await f.call(connection, `/channels/${channelId}/threads`, 'POST', { text: 'No channel write' })).status, 501);
+  assert.equal((await f.call(connection, '/search/messages?query=test&limit=0')).status, 400);
 });
