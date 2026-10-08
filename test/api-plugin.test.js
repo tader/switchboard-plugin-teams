@@ -448,3 +448,22 @@ test('read-state token rejection updates auth status and stops remaining batch i
   assert.equal((await f.call(connection, '/status')).body.tokenImportRequired, true);
   assert.equal(f.authCalls.length, 0);
 });
+
+test('flat unread uses the ordinary horizon after a cleared bookmark and preserves active bookmarks', async () => {
+  const api = new TeamsAPI({ credentials: { identity: { oid: 'self' } } });
+  api.chats = async () => ({ items: [{ id: 'chat', title: 'Test' }] });
+  api.messages = async () => ({ items: [
+    { id: '1', time: 100, authorId: '8:orgid:peer' },
+    { id: '2', time: 200, authorId: '8:orgid:peer' },
+    { id: '3', time: 300, authorId: '8:orgid:self' },
+  ] });
+  let conversation = { userConsumptionHorizon: { originalArrivalTime: 0 }, consumptionHorizon: { originalArrivalTime: 100 } };
+  api.resolve = async () => conversation;
+  assert.deepEqual((await api.unread()).items.map(item => item.id), ['2']);
+  conversation.userConsumptionHorizon = { OriginalArrivalTime: 200 };
+  assert.deepEqual((await api.unread()).items, []);
+  conversation.userConsumptionHorizon = { originalArrivalTime: 'unknown' };
+  const unknown = await api.unread();
+  assert.equal(unknown.chats[0].boundaryFound, false);
+  assert.equal(unknown.chats[0].recentMessages.length, 3);
+});
