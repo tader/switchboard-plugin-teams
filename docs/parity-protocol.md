@@ -121,3 +121,21 @@ adapter input compatibility only. Custom-ID metadata, malformed responses,
 lagging reads, authorization failures, accepted-receipt replay and persistence
 faults have fixture coverage. Actual write readback and native custom reactions
 still require an authorized test conversation. The full suite passed 157 tests.
+
+## Follow-up read-only validation
+
+On 2026-10-08, separate silent commands reused the saved diagnostic session
+without another sign-in. Profile, conversation listing and recent-message reads
+passed. Triage returned ten groups and three successful reply contexts. Its
+eight coverage issues were unknown consumption horizons, not transport errors;
+those sources cannot establish an unread boundary. The snapshot did not report
+partial discovery, but the bounded inbox still had a continuation.
+
+Exact-message reaction listing succeeded for nine sampled messages, including
+four with existing reactions. One unavailable message was explicitly skipped.
+Availability source labels and incomplete-catalog flags matched the contract.
+Exact-email mention preparation resolved the signed-in account to its own MRI.
+This checks identity preparation and existing metadata, not native rendering,
+notification or post-write confirmation. No messages or read markers were
+written; live mutation/new-chat checks await a designated test conversation and
+recipient.
