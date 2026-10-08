@@ -80,9 +80,10 @@ root in addition to the bounded reply page. Retention/unavailable history remain
 outside `completeHistory=false` coverage.
 
 Live checks on 2026-10-08 passed channel root listing and continuation, exact
-thread reads and a thread NDJSON export. That sampled thread had no older reply
-page. Deep reply continuation and opening a channel search hit remain live
-validation work; cross-thread/cross-account cursor protection, overlap, replay
+thread reads and a thread NDJSON export. A subsequent saved-session check opened
+a channel search hit, followed a reply-history continuation with limit=2 and
+verified identical replay of the second page. This is sampled continuation
+evidence, not a full retention or scale guarantee; cross-thread/cross-account cursor protection, overlap, replay
 and redirect rejection have fixture coverage. Channel sends/replies, channel
 read markers and automatic read-after-reply remain disabled.
 
@@ -95,3 +96,28 @@ returned `server_renewed` and verified fresh expiry/readiness on the existing
 imported-token connection without a browser or token upload. These results do
 not establish indefinite token lifetime, cookie-only recovery after expiry,
 central reconnect upload or durable ledger recovery.
+
+## Mutation confirmation and reaction availability
+
+Acceptance is fsynced before confirmation. A saved account/thread/operation
+context and content digest allow unfinished verification to resume after restart
+without storing another copy of message content. At most two exact-message GETs
+share a five-second budget; there are no automatic write retries. Failed reads
+or verification persistence never discard the accepted receipt. Legacy receipts
+without confirmation context explicitly report unavailable.
+
+Send observation requires exact message/client ID, author, message type, content
+and mention metadata. Edits check author and matching content/type/mentions;
+deletions require an explicit tombstone rather than HTTP 404. Reactions compare
+the requesting account's desired selection against validated emotions metadata.
+Responses retain accepted_by_api and add verification.status of observed,
+not_observed or unavailable. Saved observed results replay their historical
+observation; they are not a current-state promise or recipient delivery receipt.
+Private endpoints provide no atomic protection against later external changes.
+
+Reaction availability combines presets and IDs observed on the exact message,
+labels their source and explicitly reports an incomplete catalog. canSet means
+adapter input compatibility only. Custom-ID metadata, malformed responses,
+lagging reads, authorization failures, accepted-receipt replay and persistence
+faults have fixture coverage. Actual write readback and native custom reactions
+still require an authorized test conversation. The full suite passed 157 tests.

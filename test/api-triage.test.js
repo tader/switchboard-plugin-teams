@@ -238,8 +238,11 @@ test('ledger failure after send leaves an uncertain intent; read-stage persisten
   assert.equal(result.items[0].send.status, 'uncertain'); assert.equal(f.state.sends, 1);
   const restarted = new TeamsTriage(f.api, new SendLedger(path.dirname(f.ledger.file)));
   assert.equal((await restarted.replies(input)).items[0].send.status, 'uncertain'); assert.equal(f.state.sends, 1);
-  const other = await fixture(t, { protocols: enabled }), otherGroup = (await other.triage.inbox()).items[0], otherWrite = other.ledger.write.bind(other.ledger); let otherWrites = 0;
-  other.ledger.write = records => ++otherWrites === 3 ? Promise.reject(new Error('disk full')) : otherWrite(records);
+  const other = await fixture(t, { protocols: enabled }), otherGroup = (await other.triage.inbox()).items[0], otherWrite = other.ledger.write.bind(other.ledger); let failedReadPersistence = false;
+  other.ledger.write = records => {
+    if (!failedReadPersistence && Object.values(records).some(record => record.triageRead)) { failedReadPersistence = true; return Promise.reject(new Error('disk full')); }
+    return otherWrite(records);
+  };
   const otherInput = { replies: [reply(otherGroup)] }, accepted = await other.triage.replies(otherInput);
   assert.equal(accepted.items[0].send.status, 'accepted_by_api'); assert.equal(accepted.items[0].read.reason, 'read_update_persistence_failed');
   const recovery = new TeamsTriage(other.api, new SendLedger(path.dirname(other.ledger.file)), { protocols: enabled, readProtocols: disabledReads });

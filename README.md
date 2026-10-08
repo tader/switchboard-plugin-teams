@@ -172,9 +172,9 @@ Run `npm run check:triage -- --silent` for a read-only live check using the save
 
 ## Writes and history
 
-Every write requires an `idempotencyKey`. Use one new key per intended action and reuse it for retries. The durable ledger records intent before the HTTP write; there are no automatic write retries. `accepted_by_api` means server acceptance, not delivery or read confirmation. If `send_uncertain` or `mutation_uncertain` occurs, inspect Teams before further action; retrying with a new key can duplicate the action.
+Every write requires an `idempotencyKey`. Use one new key per intended action and reuse it for retries. The durable ledger records intent before the HTTP write; there are no automatic write retries. `accepted_by_api` means server acceptance. After saving that receipt, the adapter performs at most two exact-message reads within five seconds. `verification.status` is `observed`, `not_observed`, or `unavailable`; observation confirms matching server state, never recipient delivery. Reusing the same key can retry an unfinished readback without another write. Once observed, the saved observation replays; it does not promise the message is still unchanged. If `send_uncertain` or `mutation_uncertain` occurs, inspect Teams before further action; retrying with a new key can duplicate the action.
 
-Edits and deletion require `expectedText`, exact message IDs and ownership. The adapter rechecks text and version immediately before writing, but the private endpoint does not provide an atomic conditional-write guarantee. Edits refuse existing mentions, quoted replies and attachments. Mutation target lookup searches at most six pages of 200 messages. Reaction IDs are the supported common Teams reactions.
+Edits and deletion require `expectedText`, exact message IDs and ownership. The adapter rechecks text and version immediately before writing, but the private endpoint does not provide an atomic conditional-write guarantee. Edits refuse existing mentions, quoted replies and attachments. Mutation target lookup searches at most six pages of 200 messages. Reaction listing uses an exact-message read. Its `available` entries identify adapter presets and IDs observed on the message; `availabilityComplete=false` makes the incomplete catalog explicit. `canSet` means the ID fits the adapter input contract, not that the server grants permission or supports it for this account.
 
 For formatted sends/edits, use `content` instead of `text`, for example:
 
@@ -182,7 +182,7 @@ For formatted sends/edits, use `content` instead of `text`, for example:
 {"content":[{"type":"paragraph","runs":[{"text":"Hello","marks":["bold"]}]}],"idempotencyKey":"example-unique-key"}
 ```
 
-Supported blocks: paragraph, quote, bulletedList and numberedList. Marks: bold, italic, underline, strike and code; links must use HTTP(S). Structured quotes are formatting, not replies to another message. No arbitrary HTML or mentions are accepted. Message HTML returned by reads is untrusted data.
+Supported blocks: paragraph, quote, bulletedList and numberedList. Marks: bold, italic, underline, strike and code; links must use HTTP(S). Structured quotes are formatting, not replies to another message. Person mention runs require exact directory emails; arbitrary HTML is refused. Message HTML returned by reads is untrusted data.
 
 History cursors are bound to the connection, conversation, page size and format. They expire after 30 minutes and reset on plugin reload. Reusing a cursor repeats its page. Keep `limit` and `format` unchanged while following `nextCursor`; pages proceed from newer to older history with chronological records inside each page. Capacity is 1,000 cursor records and 100,000 observed IDs per traversal. `format=ndjson` adds an export string to each JSON response.
 

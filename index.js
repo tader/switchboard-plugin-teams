@@ -142,7 +142,7 @@ export async function createAdapter(ctx, {
         const query = peopleQuery(url.searchParams.get('query')); operation = () => api.people(query);
       } else if (request.method === 'POST' && messages) {
         const id = decodeURIComponent(messages[1]), input = contentInput(await body(request, ['text', 'content', 'replyToMessageId', 'idempotencyKey']));
-        operation = () => ledger.run(input.idempotencyKey, ['api-send', id, input], () => api.prepareSend(id, input), prepared => { checkCancelled(); return api.send(prepared); }, 'send_uncertain');
+        operation = () => ledger.run(input.idempotencyKey, ['api-send', id, input], () => api.prepareSend(id, input), prepared => { checkCancelled(); return api.send(prepared); }, 'send_uncertain', (result, context) => api.confirm(result, context, controller.signal));
       } else if (request.method === 'POST' && url.pathname === '/conversations') {
         const input = await body(request, ['email', 'text', 'idempotencyKey']); input.email = recipientEmail(input.email);
         if (input.text === undefined) {
@@ -153,7 +153,7 @@ export async function createAdapter(ctx, {
           operation = () => ledger.run(input.idempotencyKey, ['api-person-send', input], async () => {
             const conversation = await api.existingConversation(input.email);
             return { ...await api.prepareSend(conversation.chatId, input), conversation };
-          }, async prepared => { checkCancelled(); return { ...prepared.conversation, ...await api.send(prepared), messageSent: true }; }, 'send_uncertain');
+          }, async prepared => { checkCancelled(); return { ...prepared.conversation, ...await api.send(prepared), messageSent: true }; }, 'send_uncertain', (result, context) => api.confirm(result, context, controller.signal));
         }
       } else if (mutation) {
         const id = decodeURIComponent(mutation[1]), mid = messageId(decodeURIComponent(mutation[2]));
@@ -164,7 +164,7 @@ export async function createAdapter(ctx, {
           let input = await body(request, kind === 'reaction' ? ['reaction', 'selected', 'idempotencyKey'] : kind === 'edit' ? ['text', 'content', 'expectedText', 'idempotencyKey'] : ['expectedText', 'idempotencyKey']);
           if (kind === 'reaction') input = { ...input, ...reactionInput(input.reaction, input.selected) };
           else { input.expectedText = messageText(input.expectedText, 'expectedText', true); if (kind === 'edit') input = contentInput(input); }
-          operation = () => ledger.mutate(input.idempotencyKey, ['api', kind, id, mid], input, () => api.prepareMutation(id, mid, kind, input), prepared => { checkCancelled(); return api.mutate(prepared); });
+          operation = () => ledger.mutate(input.idempotencyKey, ['api', kind, id, mid], input, () => api.prepareMutation(id, mid, kind, input), prepared => { checkCancelled(); return api.mutate(prepared); }, (result, context) => api.confirm(result, context, controller.signal));
         }
       } else if (url.pathname.startsWith('/search/') || /\/(threads|unread)(\/|$)/.test(url.pathname)) unsupported();
       else throw new AdapterError('not_found', 'Unknown Teams operation.', 404);
