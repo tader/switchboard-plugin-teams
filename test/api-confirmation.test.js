@@ -7,7 +7,7 @@ import { TeamsAPI, encodeConversation } from '../lib/teams-api.js';
 import { SendLedger } from '../lib/ledger.js';
 
 const thread = '19:verification@thread.v2', chatId = encodeConversation('chat', thread);
-function fixture() {
+function fixture({ nativeQuoteSeparators = false } = {}) {
   let raw = { id: '100', content: 'Before', messagetype: 'Text', from: '8:orgid:self', clientmessageid: '101', version: '1', properties: {} };
   let outcome = 'observed', error = null, gets = 0;
   const writes = [], session = { credentials: { identity: { oid: 'self', tenant: 'tenant', name: 'Self' },
@@ -17,7 +17,14 @@ function fixture() {
     if (pathname.endsWith('/teams/users/me')) return Response.json({ chats: [{ id: thread }], teams: [] });
     if (options.method && options.method !== 'GET') {
       writes.push(options);
-      if (options.method === 'POST') { const payload = JSON.parse(options.body); if (outcome === 'observed') raw = { ...raw, ...payload }; return Response.json({ OriginalArrivalTime: 100 }); }
+      if (options.method === 'POST') { const payload = JSON.parse(options.body); if (outcome === 'observed') {
+        raw = { ...raw, ...payload };
+        if (nativeQuoteSeparators) raw.content = raw.content
+          .replace(/(<blockquote[^>]*>)\s*(<strong)/, '$1\r\n$2')
+          .replace(/(<\/strong>)\s*(<p itemprop="preview">)/, '$1\r\n$2')
+          .replace(/(<\/p>)\s*(<\/blockquote>)/, '$1\r\n$2')
+          .replace(/(<\/blockquote>)\s*(<p>)/, '$1\r\n$2');
+      } return Response.json({ OriginalArrivalTime: 100 }); }
       if (outcome === 'observed') {
         if (pathname.endsWith('/properties')) { const key = JSON.parse(options.body).emotions.key; raw.properties.emotions = options.method === 'DELETE' ? [] : [{ key, users: [{ mri: '8:orgid:self' }] }]; }
         else if (options.method === 'DELETE') raw = { ...raw, messagetype: 'MessageDelete' };
@@ -110,4 +117,21 @@ test('reaction availability includes observed custom keys with truthful source a
   assert.equal(result.available.find(x => x.reaction === '😀').canSet, false);
   assert.equal(result.available.find(x => x.reaction === 'heart').source, 'adapter_preset');
   f.raw.properties.emotions = 'not-json'; await assert.rejects(f.api.reactions(chatId, '100'), { code: 'api_schema_changed' });
+});
+
+
+test('native quote block separators preserve exact send confirmation', async t => {
+  const f = fixture({ nativeQuoteSeparators: true }), journal = await ledger(t);
+  const input = { text: 'Quoted reply', replyToMessageId: '100' };
+  const result = await journal.run('native-quote-confirmation', input,
+    () => f.api.prepareSend(chatId, input), p => f.api.send(p), 'send_uncertain',
+    (r, c) => f.api.confirm(r, c));
+  assert.equal(result.verification.status, 'observed');
+  assert.match(f.raw.content, /<\/blockquote>\r\n<p>Quoted reply<\/p>$/);
+  const context = Object.values(await journal.read())[0].confirmation;
+  f.raw.content = f.raw.content.replace('itemid="100"', 'itemid="999"');
+  assert.equal((await f.api.confirm(result, context)).status, 'not_observed');
+  f.raw.content = f.raw.content.replace('itemid="999"', 'itemid="100"').replace('Quoted reply', 'Changed reply');
+  assert.equal((await f.api.confirm(result, context)).status, 'not_observed');
+  assert.equal(f.writes.length, 1);
 });

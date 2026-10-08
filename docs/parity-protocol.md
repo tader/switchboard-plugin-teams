@@ -48,8 +48,8 @@ Caller names do not select identities. At most 20 distinct people are resolved
 per message. Structured chat sends, triage replies and edits share this builder.
 Existing quotes/attachments remain protected from editing.
 
-Quotes and mentions have source and fixture evidence. No quote or mention was
-sent live; native rendering and notifications remain designated-chat checks.
+Quotes and mentions have source, fixture and authorized live server-readback
+evidence. Native UI rendering and recipient notifications remain unverified.
 
 ## Virtual one-to-one conversations
 
@@ -119,8 +119,8 @@ Reaction availability combines presets and IDs observed on the exact message,
 labels their source and explicitly reports an incomplete catalog. canSet means
 adapter input compatibility only. Custom-ID metadata, malformed responses,
 lagging reads, authorization failures, accepted-receipt replay and persistence
-faults have fixture coverage. Actual write readback and native custom reactions
-still require an authorized test conversation. The full suite passed 157 tests.
+faults have fixture coverage. Authorized chat write readback subsequently passed as described below. Native
+custom-reaction writes remain unverified. The full suite passed 158 tests.
 
 ## Follow-up read-only validation
 
@@ -137,5 +137,33 @@ Availability source labels and incomplete-catalog flags matched the contract.
 Exact-email mention preparation resolved the signed-in account to its own MRI.
 This checks identity preparation and existing metadata, not native rendering,
 notification or post-write confirmation. No messages or read markers were
-written; live mutation/new-chat checks await a designated test conversation and
-recipient.
+written during these read-only checks. Later authorized mutation evidence is
+recorded below; new-chat persistence still requires a designated new recipient.
+
+## Authorized chat-write validation
+
+On 2026-10-08 the user designated the existing Brandon Haschick chat for test
+sends, quotes/mentions, edits, deletion and reaction changes. Exact thread
+membership and Brandon's directory MRI were matched before dispatch. Saved
+credentials were reused silently for every command; no new sign-in was needed.
+New-chat creation was not tested or authorized by this existing-chat designation.
+
+Plain and formatted mention sends were accepted and observed by exact-message
+readback. A combined quote/mention initially reported not_observed despite
+matching client ID, author, type and mention metadata: Teams inserted CRLF
+separators at the four native quote block boundaries. Supplying separators also
+caused additional insertion. Confirmation now ignores only CRLFs at those four
+positions in the exact generated native quote prefix. It retains all attributes,
+quote IDs, author/preview text, reply content and mention metadata. Regression
+checks reject changed quote IDs and changed reply text.
+
+The final lifecycle passed all seven server observations: plain send, formatted
+quoted mention, reaction add, reaction remove, edit, quote deletion and plain
+message deletion. Both sends were replayed using fresh ledger instances with
+the same keys; no additional write occurred. Every temporary message from the
+initial checks and diagnostic iterations was deleted with observed tombstones.
+The full suite passed 158 tests after the fix.
+
+These checks validate adapter-to-server writes and matching readback on this
+account. They do not establish recipient delivery/notifications, native UI
+rendering, custom reaction support, channel writes or new-chat persistence.
