@@ -1,6 +1,8 @@
 # Teams API plugin for Switchboard
 
-Version 0.8.1 supports direct Teams private API calls with local browser sign-in or imported tokens. Chrome or Edge captures renewal credentials during normal Teams sign-in, then closes. Access tokens renew through HTTP using the existing Teams public client ID, without a client secret or browser. A central Switchboard can import tokens from another machine and run without Chrome or Edge. No Go, Electron, Microsoft Graph registration, npm dependencies, or persistent Teams tab is required. Node 24+ is required.
+Version 0.9.0 supports direct Teams private API calls with local browser sign-in or imported tokens. Chrome or Edge captures renewal credentials during normal Teams sign-in, then closes. Access tokens renew through HTTP using the existing Teams public client ID, without a client secret or browser. A central Switchboard can import tokens from another machine and run without Chrome or Edge. No Go, Electron, Microsoft Graph registration, npm dependencies, or persistent Teams tab is required. Node 24+ is required.
+
+For unread triage, prefer `getTeamsTriageInbox`, `getTeamsReplyContexts` and `replyTeamsBatch`. The inbox groups chats and channel threads; native quoted chat replies have durable duplicate protection. **Channel replies and automatic read updates remain disabled pending live protocol verification.** See [triage protocol status](docs/triage-protocol.md).
 
 The service ID remains `teams-web`, and the existing browser authentication method remains `browser`, so existing Switchboard connections can be reconnected in place. The previous DOM adapter is retained in `legacy-index.js` for regression testing; production does not invoke it.
 
@@ -115,10 +117,32 @@ There is no fixed manual-login interval: Microsoft session expiry, MFA, revocati
 | Start conversation operation | Resolves an existing one-to-one chat; cannot create a new one |
 | Chat sends and edits | Plain text or structured formatting and links |
 | Delete own chat message; add/remove reaction | Supported |
-| Message search, quoted replies, mentions, mark unread | Not yet migrated |
-| Channel thread reads/writes, attachments, new conversations | Not yet migrated |
+| Grouped unread triage and batch context | Chats and channel threads; bounded, paginated coverage |
+| Native quoted chat replies | `replyTeamsBatch`; existing `replyToMessageId` route parameter remains unsupported |
+| Channel thread reads | Through triage inbox/context helpers |
+| Channel replies and read-after-reply | Implemented behind disabled protocol-verification gates |
+| Message search, mentions, mark unread, attachments, new conversations | Not yet migrated |
 
 Unsupported operations are removed from the advertised OpenAPI schema; saved calls fail explicitly. `getTeamsCapabilities` reports the supported subset. Conversation data can be partial, and retained history is not a guaranteed complete archive. API reads do not send read markers.
+
+## Unread triage and replies
+
+1. Call `getTeamsTriageInbox`. Defaults: 10 groups, five context messages and a 50-message unread window. Mentions come first, then direct chats, then other conversations; oldest unread first within each bucket. Priority applies to scanned sources. Follow `nextCursor` with unchanged limits while `hasMore`, including after an empty page. Each scan bounds work to 20 sources and 20 roots per channel; missing flags/horizons and unavailable sources appear in `coverage.issues`.
+2. Review each group's `unread`, `context`, factual `signals` and `canReply`. Messages are not duplicated across unread/context arrays. Own messages, deleted messages and system events are excluded from unread results. Read-only calls leave everything unread. The plugin does not decide urgency or generate wording.
+3. If needed, call `getTeamsReplyContexts` with up to ten reply targets and optional `contextLimit` (default 20, maximum 50). It refreshes context and returns new reply targets on individual messages. The inbox group-level target chooses the latest incoming message; a context refresh preserves the selected message as its group-level target.
+4. Call `replyTeamsBatch` with up to ten explicit replies. Use a unique key per item and retain the exact input for retries:
+
+```json
+{"replies":[{"target":"<replyTarget from inbox>","text":"Thanks, I'll review this today.","idempotencyKey":"review-reply-20261008-001"}]}
+```
+
+Each result includes independent `send` and `read` outcomes. `context_changed` means fetch fresh context and reconsider the reply. Sends are sequential; authentication/rate/transport failures or an uncertain send stop remaining items as `not_attempted`. Reuse the original key for accepted/uncertain retries, never invent a replacement key to bypass protection. Accepted sends replay after restart even when reply targets have expired. Content conflicts are refused.
+
+Reply targets and cursors are account-bound, expire after 30 minutes or plugin reload, and may be evicted at the 1,000-record capacity. A refreshed target identifies a new operation; retain the old target/key when checking an already attempted operation.
+
+Currently successful replies return `read.status="deferred"`, `reason="protocol_unverified"`. The durable read stage is implemented and tested: after protocol verification it can retry read failures without resending, preserves later arrivals/newer known horizons, and defers channel-wide advancement while sibling threads remain unhandled or coverage is incomplete. An old thread root never proves coverage of omitted unread replies. No automatic marking is enabled in this release.
+
+Run `npm run check:triage -- --silent` for a read-only live check using the saved export browser session, or omit `--silent` for interactive authentication. It prints counts and sanitized errors, sends no messages, and writes no read markers.
 
 ## Writes and history
 

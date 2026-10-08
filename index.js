@@ -3,13 +3,17 @@ import fs from 'node:fs/promises';
 import path from 'node:path';
 import { randomBytes, randomUUID } from 'node:crypto';
 import { TeamsSession, importRequired, readyCredentials } from './lib/api-auth.js';
-import { TeamsAPI, capabilities, unsupported } from './lib/teams-api.js';
+import { TeamsAPI, capabilities as apiCapabilities, unsupported } from './lib/teams-api.js';
+import { TeamsTriage, triageCapabilities } from './lib/triage.js';
 import { SendLedger } from './lib/ledger.js';
 import { AdapterError } from './lib/errors.js';
 import { messageText, messageId, recipientEmail, reactionInput } from './lib/input.js';
 import { richContent } from './lib/content.js';
 import { openapi } from './lib/api-openapi.js';
 import { validateTokenBundle } from './lib/token-bundle.js';
+
+const capabilities = { ...apiCapabilities, supported: [...apiCapabilities.supported, 'triage_inbox', 'batch_reply_contexts', 'batch_chat_replies', 'quoted_chat_replies', 'channel_thread_reads'],
+  unsupported: apiCapabilities.unsupported.filter(name => name !== 'quoted_replies'), triage: triageCapabilities };
 
 const profilePath = (dataDir, profile) => {
   if (typeof profile !== 'string' || !/^[a-f0-9]{8}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{12}$/.test(profile)) throw new AdapterError('invalid_profile', 'Invalid connection profile.', 400);
@@ -49,6 +53,7 @@ function contentInput(input) {
 export async function createAdapter(ctx, {
   createSession = (profile, dir, settings) => new TeamsSession(profile, dir, settings),
   createAPI = session => new TeamsAPI(session),
+  createTriage = (api, ledger) => new TeamsTriage(api, ledger),
   createServer = handler => http.createServer(handler),
 } = {}) {
   const sessions = new Map(), pending = new Map(), invocations = new Map(); let disposed = false;
@@ -57,7 +62,8 @@ export async function createAdapter(ctx, {
     const directory = profilePath(ctx.dataDir, profile);
     if (!sessions.has(profile)) {
       const session = createSession(profile, directory, ctx.settings);
-      sessions.set(profile, { session, api: createAPI(session), ledger: new SendLedger(directory) });
+      const api = createAPI(session), ledger = new SendLedger(directory);
+      sessions.set(profile, { session, api, ledger, triage: createTriage(api, ledger) });
     }
     return sessions.get(profile);
   };
@@ -82,7 +88,9 @@ export async function createAdapter(ctx, {
       if (invocation.authorizationError) throw invocation.authorizationError;
       const url = new URL(request.url, 'http://localhost');
       if (invocation.method !== request.method || invocation.pathname !== url.pathname || invocation.search !== url.search) throw new AdapterError('invocation_mismatch', 'Invocation does not match this request.', 403);
-      const { session, api, ledger } = get(invocation.profile); activeSession = session;
+      const { session, api, ledger, triage } = get(invocation.profile); activeSession = session;
+      const controller = new AbortController();
+      response.once?.('close', () => controller.abort());
       const checkCancelled = () => { if (response.destroyed) throw new AdapterError('client_disconnected', 'Caller disconnected before the operation.', 499); };
       checkCancelled();
       if (request.method === 'GET' && ['/status', '/diagnostics'].includes(url.pathname)) return respond(response, 200, { ...session.status(), capabilities });
@@ -98,6 +106,14 @@ export async function createAdapter(ctx, {
       if (request.method === 'GET' && ['/chats', '/unread/chats'].includes(url.pathname)) {
         const unread = url.pathname === '/unread/chats' || boolean(url, 'unreadOnly'); operation = () => api.chats(unread);
       } else if (request.method === 'GET' && url.pathname === '/channels') operation = () => api.channels();
+      else if (request.method === 'GET' && url.pathname === '/triage/inbox') {
+        const limit = integer(url, 'limit', 10, 1, 20), contextLimit = integer(url, 'contextLimit', 5, 1, 20), cursor = url.searchParams.get('cursor') ?? undefined;
+        operation = () => triage.inbox({ limit, contextLimit, cursor, signal: controller.signal });
+      } else if (request.method === 'POST' && url.pathname === '/triage/contexts') {
+        const input = await body(request, ['targets', 'contextLimit']); operation = () => triage.contexts(input, controller.signal);
+      } else if (request.method === 'POST' && url.pathname === '/triage/replies') {
+        const input = await body(request, ['replies']); operation = () => triage.replies(input, { signal: controller.signal, checkCancelled });
+      }
       else if (request.method === 'GET' && url.pathname === '/unread/messages') {
         const max = integer(url, 'maxChats', 3, 1, 5), limit = integer(url, 'limitPerChat', 50, 1, 100); operation = () => api.unread(max, limit);
       } else if (request.method === 'GET' && messages) {
@@ -136,7 +152,18 @@ export async function createAdapter(ctx, {
         }
       } else if (url.pathname.startsWith('/search/') || /\/(threads|unread)(\/|$)/.test(url.pathname)) unsupported();
       else throw new AdapterError('not_found', 'Unknown Teams operation.', 404);
-      const result = await session.serial(() => { checkCancelled(); return operation(); });
+      const result = await session.serial(async () => {
+        checkCancelled(); const result = await operation();
+        // Batch errors remain per item, but must also update auth status so a
+        // laptop sync does not mistake rejected credentials for healthy tokens.
+        if (url.pathname === '/triage/replies' && session.credentials?.authMode === 'tokens') {
+          for (const item of result.items) for (const stage of [item.send, item.read]) if (stage?.error?.code === 'api_unauthorized') {
+            const error = importRequired(); session.authError = error;
+            stage.error = { code: error.code, message: error.message };
+          }
+        }
+        return result;
+      });
       respond(response, 200, result);
     } catch (error) {
       if (activeSession?.credentials?.authMode === 'tokens' && error.code === 'api_unauthorized') { error = importRequired(); activeSession.authError = error; }
@@ -150,7 +177,8 @@ export async function createAdapter(ctx, {
   const entryFor = profile => {
     const directory = profilePath(ctx.dataDir, profile);
     const session = createSession(profile, directory, ctx.settings);
-    return { session, api: createAPI(session), ledger: new SendLedger(directory) };
+    const api = createAPI(session), ledger = new SendLedger(directory);
+    return { session, api, ledger, triage: createTriage(api, ledger) };
   };
   const replaceEntry = async (profile, entry) => {
     if (disposed) throw new AdapterError('disposed', 'Plugin has been unloaded.', 503);

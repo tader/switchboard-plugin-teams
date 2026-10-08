@@ -18,7 +18,7 @@ const thread = '19:test@thread.v2';
 const expiry = () => Date.now() + 3600_000;
 const bundle = profile => ({ profile, authVersion: 1, identity: { tenant: '11111111-1111-1111-1111-111111111111', oid: profile, name: 'Test user', email: 'test@example.com' },
   tokens: { skype: { value: 'skype-' + profile, expiresAt: expiry() }, chatsvcagg: { value: 'csa-' + profile, expiresAt: expiry() } } });
-async function fixture(t, { forbidBrowser = false, dataDir } = {}) {
+async function fixture(t, { forbidBrowser = false, dataDir, peerMessages = false } = {}) {
   const directory = dataDir ?? await fs.mkdtemp(path.join(os.tmpdir(), 'teams-api-test-'));
   const requests = [], sessions = new Map(), authCalls = []; let handler, failSend = false, pageLink = null, authFailure = false, rejectDirectory = false, rejectAuthz = false, refreshFailure = null, failSecondRefresh = false, refreshCount = 0;
   const response = value => new Response(JSON.stringify(value), { status: 200 });
@@ -47,7 +47,7 @@ async function fixture(t, { forbidBrowser = false, dataDir } = {}) {
     if (url.pathname.endsWith('/messages') && (options.method ?? 'GET') === 'GET') {
       const chat = options.headers.Authentication.slice('skypetoken='.length);
       const self = tokenClaims(chat).skypeid?.replace(/^orgid:/, '') ?? chat.split('chat-')[1];
-      return response({ messages: [{ id: '1', from: '8:orgid:' + self, content: 'Original', messagetype: 'Text', originalarrivaltime: '2026-10-07T12:01:00Z', version: 'v1', properties: {} }], _metadata: { backwardLink: pageLink } });
+      return response({ messages: [{ id: '1', from: '8:orgid:' + (peerMessages ? 'fixture-peer' : self), content: 'Original', messagetype: 'Text', originalarrivaltime: '2026-10-07T12:01:00Z', version: 'v1', properties: {} }], _metadata: { backwardLink: pageLink } });
     }
     if (url.pathname.endsWith('/messages') && options.method === 'POST') {
       if (failSend) throw new Error('secret server body must not escape');
@@ -195,6 +195,31 @@ test('legacy connections expose reconnect guidance and migration gaps without op
   assert.ok(!f.instance.services[0].openapi.paths['/search/messages']);
 });
 
+test('triage HTTP routes validate, bind targets to profiles and preserve accepted replies across reload', async t => {
+  const f = await fixture(t, { peerMessages: true }), a = await f.connect(), b = await f.connect();
+  const inbox = await f.call(a, '/triage/inbox?limit=1');
+  assert.equal(inbox.status, 200); assert.equal(inbox.body.items.length, 1);
+  assert.equal((await f.call(a, '/triage/inbox?limit=0')).status, 400);
+  const target = inbox.body.items[0].replyTarget;
+  const contexts = await f.call(a, '/triage/contexts', 'POST', { targets: [target] });
+  assert.equal(contexts.status, 200); assert.equal(contexts.body.items[0].unread[0].text, 'Original');
+  assert.equal((await f.call(a, '/triage/contexts', 'POST', { targets: [target], unknown: true })).status, 400);
+  const input = { replies: [{ target, text: 'Fixture reply', idempotencyKey: 'http-triage-001' }] };
+  const other = await f.call(b, '/triage/replies', 'POST', input);
+  assert.equal(other.body.items[0].send.error.code, 'invalid_reply_target');
+  const result = await f.call(a, '/triage/replies', 'POST', input);
+  assert.equal(result.body.items[0].send.status, 'accepted_by_api');
+  assert.equal(result.body.items[0].read.reason, 'protocol_unverified');
+  assert.ok(!JSON.stringify(result).includes('_triageRead'));
+  const saved = structuredClone(a); await f.instance.dispose();
+  const restarted = await fixture(t, { dataDir: f.directory, peerMessages: true });
+  const replay = await restarted.call(saved, '/triage/replies', 'POST', input);
+  assert.equal(replay.body.items[0].send.replayed, true);
+  assert.equal(restarted.requests.filter(request => request.method === 'POST' && request.url.pathname.endsWith('/messages')).length, 0);
+  const caps = (await restarted.call(saved, '/capabilities')).body;
+  assert.equal(caps.triage.inbox, true); assert.equal(caps.triage.channelReplies, false);
+});
+
 test('API writes preserve duplicate protection, quarantine uncertain sends and validate before dispatch', async t => {
   const f = await fixture(t), connection = await f.connect();
   const id = (await f.call(connection, '/chats')).body.items[0].id, endpoint = `/chats/${id}/messages`;
@@ -214,6 +239,19 @@ test('API writes preserve duplicate protection, quarantine uncertain sends and v
   assert.equal(edit.body.status, 'accepted_by_api');
   const refused = await f.call(connection, endpoint + '/1', 'DELETE', { expectedText: 'wrong', idempotencyKey: 'delete-test-0001' });
   assert.equal(refused.body.error.code, 'message_changed');
+});
+
+test('batch token rejection updates status for laptop auth sync without dispatching a reply', async t => {
+  const f = await fixture(t, { peerMessages: true, forbidBrowser: true });
+  const connection = await f.tokenAuth.connect({ config: { tokenBundle: encodeTokenBundle(signedBundle()) } });
+  const inbox = (await f.call(connection, '/triage/inbox')).body;
+  f.setRejectDirectory(true);
+  const result = await f.call(connection, '/triage/replies', 'POST', { replies: [{ target: inbox.items[0].replyTarget, text: 'Fixture reply', idempotencyKey: 'auth-triage-001' }] });
+  assert.equal(result.body.items[0].send.error.code, 'token_import_required');
+  const status = (await f.call(connection, '/status')).body;
+  assert.equal(status.ready, false); assert.equal(status.tokenImportRequired, true);
+  assert.equal(f.requests.filter(request => request.method === 'POST' && request.url.pathname.endsWith('/messages')).length, 0);
+  assert.equal(f.authCalls.length, 0);
 });
 
 test('history cursors replay, remain account-bound and reject credential-exfiltrating backward links', async t => {

@@ -5,11 +5,13 @@ services: [teams-web]
 
 # Connecting Teams
 
-Teams 0.8.1 uses direct APIs with local browser sign-in or imported tokens. Browser sign-in captures a refresh token in Chrome or Edge and closes the browser. Access tokens then renew over HTTP without a client secret. Imported-token connections use no browser on Switchboard.
+Teams 0.9.0 uses direct APIs with local browser sign-in or imported tokens. Browser sign-in captures a refresh token in Chrome or Edge and closes the browser. Access tokens then renew over HTTP without a client secret. Imported-token connections use no browser on Switchboard.
 
 For local browser authentication, in Switchboard Connections, add Teams or reconnect your existing Teams connection once after upgrading from 0.5. Enter an account label and optionally your work email. Complete Microsoft sign-in in the dedicated browser window. `LOCAL-BROWSER` is a placeholder, not a code to enter at Microsoft. Each connection retains a separate browser session and encrypted API credentials.
 
 Call `getTeamsStatus`, then `listTeamsChats` and `readTeamsMessages`. Chrome stays closed during HTTP renewal. The plugin renews automatically before data calls when tokens approach expiry. After terminal refresh rejection, browser connections attempt saved-session browser authentication. If Microsoft requires interactive authentication, use `openTeamsLogin` and poll `getTeamsStatus`, or reconnect through Switchboard. Your tenant policy determines how often this happens.
+
+For unread triage, use `getTeamsTriageInbox` to obtain grouped unread messages and reply targets. Use `getTeamsReplyContexts` for extra context, then `replyTeamsBatch` for explicit native quoted chat replies. Keep each reply's input and idempotency key for retries. These calls report partial coverage and preserve read state. Channel replies and automatic read updates are disabled pending live protocol verification; successful chat replies report a deferred read update. Check `getTeamsCapabilities` and [protocol status](triage-protocol.md).
 
 ## Central Switchboard without Chrome or Edge
 
