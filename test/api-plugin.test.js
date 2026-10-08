@@ -12,7 +12,7 @@ import { TeamsAPI, messagePayload } from '../lib/teams-api.js';
 import { requestJSON, chatOrigin, tokenClaims } from '../lib/api-http.js';
 import { AdapterError } from '../lib/errors.js';
 import { encodeTokenBundle } from '../lib/token-bundle.js';
-import { signedBundle, signedToken, proprietaryToken, serverAccepts } from './token-fixture.js';
+import { signedBundle, signedToken, proprietaryToken, serverAccepts, renewal } from './token-fixture.js';
 
 const thread = '19:test@thread.v2';
 const expiry = () => Date.now() + 3600_000;
@@ -20,10 +20,16 @@ const bundle = profile => ({ profile, authVersion: 1, identity: { tenant: '11111
   tokens: { skype: { value: 'skype-' + profile, expiresAt: expiry() }, chatsvcagg: { value: 'csa-' + profile, expiresAt: expiry() } } });
 async function fixture(t, { forbidBrowser = false, dataDir } = {}) {
   const directory = dataDir ?? await fs.mkdtemp(path.join(os.tmpdir(), 'teams-api-test-'));
-  const requests = [], sessions = new Map(), authCalls = []; let handler, failSend = false, pageLink = null, authFailure = false, rejectDirectory = false, rejectAuthz = false;
+  const requests = [], sessions = new Map(), authCalls = []; let handler, failSend = false, pageLink = null, authFailure = false, rejectDirectory = false, rejectAuthz = false, refreshFailure = null, failSecondRefresh = false, refreshCount = 0;
   const response = value => new Response(JSON.stringify(value), { status: 200 });
   const fetcher = async (raw, options) => {
     const url = new URL(raw); requests.push({ url, ...options });
+    if (url.hostname === 'login.microsoftonline.com') {
+      refreshCount++;
+      if (refreshFailure || failSecondRefresh && refreshCount % 2 === 0) return new Response(JSON.stringify({ error: refreshFailure || 'temporarily_unavailable', error_description: 'private-provider-secret' }), { status: 400 });
+      const form = new URLSearchParams(options.body), service = form.get('scope').startsWith('https://api.spaces.skype.com/') ? 'skype' : 'chatsvcagg';
+      return response({ access_token: signedToken(service), token_type: 'Bearer', expires_in: 3600, refresh_token: `fixture-rotated-${refreshCount}` });
+    }
     if (url.pathname.endsWith('/authz')) {
       if (rejectAuthz) return new Response(null, { status: 401 });
       const token = options.headers.Authorization.slice(7);
@@ -84,8 +90,66 @@ async function fixture(t, { forbidBrowser = false, dataDir } = {}) {
     return result;
   }
   const call = async (connection, pathname, method = 'GET', input) => invoke(await authorize(connection, pathname, method), input);
-  return { instance, directory, sessions, authCalls, requests, connect, call, invoke, authorize, auth, setFailSend: value => failSend = value, setLink: value => pageLink = value, setAuthFailure: value => authFailure = value, setRejectDirectory: value => rejectDirectory = value, setRejectAuthz: value => rejectAuthz = value, tokenAuth: instance.services[0].authMethods.find(method => method.id === 'tokens') };
+  return { instance, directory, sessions, authCalls, requests, connect, call, invoke, authorize, auth, setFailSend: value => failSend = value, setLink: value => pageLink = value, setAuthFailure: value => authFailure = value, setRejectDirectory: value => rejectDirectory = value, setRejectAuthz: value => rejectAuthz = value, setRefreshFailure: value => refreshFailure = value, setFailSecondRefresh: value => failSecondRefresh = value, tokenAuth: instance.services[0].authMethods.find(method => method.id === 'tokens') };
 }
+
+test('v2 import proves refresh credentials, renews expired tokens after restart and supports forced renewal without a browser', async t => {
+  const f = await fixture(t, { forbidBrowser: true });
+  const portable = { ...signedBundle({ exp: 1 }), renewal: renewal() };
+  const connection = await f.tokenAuth.connect({ config: { tokenBundle: encodeTokenBundle(portable) } });
+  assert.equal(connection.credentials.renewal.value, 'fixture-rotated-2');
+  const status = (await f.call(connection, '/status')).body;
+  assert.equal(status.renewalMethod, 'http_refresh_token'); assert.equal(status.tokenImportRequired, false);
+  assert.ok(!JSON.stringify(status).includes('fixture-rotated'));
+  const saved = structuredClone(connection); saved.credentials.tokens.skype.expiresAt = 1;
+  await f.instance.dispose();
+  const restarted = await fixture(t, { forbidBrowser: true, dataDir: f.directory });
+  assert.equal((await restarted.call(saved, '/chats')).status, 200);
+  assert.equal(saved.credentials.renewal.value, 'fixture-rotated-2');
+  assert.equal(new URLSearchParams(restarted.requests[0].body).get('refresh_token'), connection.credentials.renewal.value);
+  await restarted.authorize(saved, '/chats', 'GET', true);
+  assert.equal(saved.credentials.renewal.value, 'fixture-rotated-4');
+  assert.equal(restarted.authCalls.length, 0);
+});
+
+test('partial HTTP rotation is returned for encrypted persistence while a write is blocked, then recovers after reload', async t => {
+  const f = await fixture(t, { forbidBrowser: true });
+  const connection = await f.tokenAuth.connect({ config: { tokenBundle: encodeTokenBundle({ ...signedBundle(), renewal: renewal() }) } });
+  connection.credentials.tokens.skype.expiresAt = 1; f.setFailSecondRefresh(true);
+  const outgoing = await f.authorize(connection, `/chats/unused/messages`, 'POST');
+  assert.equal(connection.credentials.renewal.value, 'fixture-rotated-3', 'host receives rotation even when second resource fails');
+  const result = await f.invoke(outgoing, { text: 'Must not dispatch', idempotencyKey: 'rotation-failure-write' });
+  assert.equal(result.body.error.code, 'refresh_exchange_rejected');
+  assert.ok(!JSON.stringify(result).includes('private-provider-secret'));
+  assert.equal(f.requests.filter(r => r.url.pathname.endsWith('/messages')).length, 0);
+  const saved = structuredClone(connection); await f.instance.dispose();
+  const restarted = await fixture(t, { forbidBrowser: true, dataDir: f.directory });
+  assert.equal((await restarted.call(saved, '/chats')).status, 200);
+  assert.equal(new URLSearchParams(restarted.requests[0].body).get('refresh_token'), 'fixture-rotated-3');
+});
+
+test('revoked refresh token requires reimport; transient errors remain retryable and never open a browser', async t => {
+  const f = await fixture(t, { forbidBrowser: true });
+  const connection = await f.tokenAuth.connect({ config: { tokenBundle: encodeTokenBundle({ ...signedBundle(), renewal: renewal() }) } });
+  connection.credentials.tokens.skype.expiresAt = 1; f.setRefreshFailure('temporarily_unavailable');
+  await assert.rejects(f.call(connection, '/chats'), { code: 'refresh_exchange_rejected' });
+  assert.equal((await f.call(connection, '/status')).body.tokenImportRequired, false);
+  f.setRefreshFailure(null); assert.equal((await f.call(connection, '/chats')).status, 200);
+  connection.credentials.tokens.skype.expiresAt = 1; f.setRefreshFailure('invalid_grant');
+  await assert.rejects(f.call(connection, '/chats'), { code: 'token_import_required' });
+  assert.equal((await f.call(connection, '/status')).body.tokenImportRequired, true);
+  const count = f.requests.length; await assert.rejects(f.call(connection, '/chats'), { code: 'token_import_required' });
+  assert.equal(f.requests.length, count); assert.equal(f.authCalls.length, 0);
+});
+
+test('invalid v2 reimport leaves the existing connection usable', async t => {
+  const f = await fixture(t, { forbidBrowser: true });
+  const raw = encodeTokenBundle({ ...signedBundle(), renewal: renewal() });
+  const connection = await f.tokenAuth.connect({ config: { tokenBundle: raw } });
+  const old = f.sessions.get(connection.credentials.profile); f.setRefreshFailure('invalid_grant');
+  await assert.rejects(f.tokenAuth.connect({ config: { tokenBundle: raw }, connection }), { code: 'refresh_exchange_rejected' });
+  assert.equal(old.disposed, false); assert.equal((await f.call(connection, '/chats')).status, 200);
+});
 
 test('API plugin reads with Chrome closed, persists renewed credentials and scopes invocation capabilities', async t => {
   const f = await fixture(t), a = await f.connect(), b = await f.connect();

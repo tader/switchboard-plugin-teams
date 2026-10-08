@@ -79,6 +79,7 @@ export async function createAdapter(ctx, {
     if (!invocation || invocation.expires < Date.now()) return respond(response, 401, { error: { code: 'invalid_invocation', message: 'Invalid or expired invocation.' } });
     let activeSession;
     try {
+      if (invocation.authorizationError) throw invocation.authorizationError;
       const url = new URL(request.url, 'http://localhost');
       if (invocation.method !== request.method || invocation.pathname !== url.pathname || invocation.search !== url.search) throw new AdapterError('invocation_mismatch', 'Invocation does not match this request.', 403);
       const { session, api, ledger } = get(invocation.profile); activeSession = session;
@@ -165,10 +166,20 @@ export async function createAdapter(ctx, {
       const { session } = get(connection.credentials.profile); session.adopt(connection.credentials);
       const control = ['/status', '/diagnostics', '/capabilities', '/login'].includes(request.url.pathname);
       if (!control && pending.has(session.profile)) throw new AdapterError('signin_pending', 'Complete the pending connection sign-in.', 503);
-      if (!control) await session.ensure(force);
+      let authorizationError;
+      if (!control) {
+        const before = session.credentials;
+        try { await session.ensure(force); }
+        catch (error) {
+          // Returning the rotated credentials lets Switchboard encrypt them before
+          // our local adapter reports the failure. No data/write operation executes.
+          if (session.credentials === before) throw error;
+          authorizationError = error instanceof AdapterError ? error : new AdapterError('authentication_failed', 'Teams authentication failed.', 503);
+        }
+      }
       request.url.host = new URL(origin).host; request.url.protocol = 'http:';
       const token = randomBytes(32).toString('base64url');
-      invocations.set(token, { profile: session.profile, method: request.method, pathname: request.url.pathname, search: request.url.search, expires: Date.now() + 10_000 });
+      invocations.set(token, { profile: session.profile, method: request.method, pathname: request.url.pathname, search: request.url.search, expires: Date.now() + 10_000, authorizationError });
       request.headers.set('authorization', `Bearer ${token}`);
       // Switchboard encrypts these credentials; API tokens never leave the local adapter.
       if (session.credentials && session.credentials !== connection.credentials) return { credentials: session.credentials };
@@ -215,15 +226,18 @@ export async function createAdapter(ctx, {
         ...sharedAuth,
       }, {
         id: 'tokens', name: 'Import Teams tokens',
-        description: 'Paste a bundle from auth:export on a machine with Chrome or Edge. No browser is used here. Re-import when Microsoft access tokens expire.',
+        description: 'Paste a bundle from auth:export. Refresh-capable bundles renew automatically over HTTP. Re-import when Microsoft requires fresh authentication. No browser is used here.',
         fields: [{ key: 'label', label: 'Account label', required: true }, { key: 'tokenBundle', label: 'Teams token bundle (JSON)', type: 'secret', required: true }],
         async connect({ config, connection }) {
           const profile = connection?.credentials?.profile ?? randomUUID();
           const entry = entryFor(profile);
           try {
             const bundle = await validateTokenBundle(config.tokenBundle, connection?.credentials);
-            const credentials = await entry.session.exchange({ ...bundle, profile }, entry.session.fetcher);
-            entry.session.adopt(credentials);
+            entry.session.adopt({ ...bundle, profile });
+            // Prove that the imported RT belongs to the declared account even if
+            // its bundled access tokens are still fresh. Existing sessions stay intact on failure.
+            const credentials = bundle.renewal ? await entry.session.renew() : await entry.session.exchange({ ...bundle, profile }, entry.session.fetcher);
+            entry.session.credentials = credentials;
             await entry.api.directory(true);
             if (!readyCredentials(credentials)) throw importRequired();
             if (disposed) throw new AdapterError('disposed', 'Plugin has been unloaded.', 503);

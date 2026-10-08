@@ -1,5 +1,7 @@
 import { generateKeyPairSync, sign } from 'node:crypto';
-import { resources } from '../lib/oauth.js';
+import { resources, clientId } from '../lib/oauth.js';
+
+export const renewal = () => ({ value: 'fixture-refresh-secret', clientId, origin: 'https://teams.microsoft.com', capturedAt: Date.now(), sourceGrant: 'authorization_code' });
 
 export const tenant = '11111111-1111-1111-1111-111111111111';
 export const oid = '22222222-2222-2222-2222-222222222222';

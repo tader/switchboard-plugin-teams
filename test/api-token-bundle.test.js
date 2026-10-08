@@ -6,7 +6,7 @@ import path from 'node:path';
 import { spawnSync } from 'node:child_process';
 import { encodeTokenBundle, validateTokenBundle } from '../lib/token-bundle.js';
 import { exportTokens } from '../scripts/auth-export.js';
-import { signedBundle, signedToken, oid } from './token-fixture.js';
+import { signedBundle, signedToken, oid, renewal } from './token-fixture.js';
 
 test('portable bundles retain only supported secrets and verified account identity', async () => {
   const source = { ...signedBundle(), profile: 'local-only', messageOrigin: 'https://evil.example', chatToken: { value: 'derived-secret' } };
@@ -40,11 +40,12 @@ test('imports reject malformed, oversize, expired and mismatched bundles without
 test('export creates an owner-only file, supports silent reuse, closes auth and refuses overwrite', async t => {
   const directory = await fs.mkdtemp(path.join(os.tmpdir(), 'teams-export-test-')); t.after(() => fs.rm(directory, { recursive: true, force: true }));
   const out = path.join(directory, 'tokens.json'); let closed = 0, acquired = 0;
-  const createAuthenticator = () => ({ async acquire(options) { acquired++; assert.equal(options.interactive, false); assert.equal(options.loginHint, 'test@example.com'); return signedBundle(); }, async close() { closed++; } });
+  const createAuthenticator = () => ({ async acquire(options) { acquired++; assert.equal(options.interactive, false); assert.equal(options.loginHint, 'test@example.com'); return { ...signedBundle(), renewal: renewal() }; }, async close() { closed++; } });
   await exportTokens({ out, silent: true, loginHint: 'TEST@example.com' }, { createAuthenticator });
   assert.equal((await fs.stat(out)).mode & 0o777, 0o600); assert.equal(closed, 1);
   assert.equal((await validateTokenBundle(await fs.readFile(out, 'utf8'), undefined)).identity.oid, oid);
   const contents = await fs.readFile(out, 'utf8');
+  assert.equal(JSON.parse(contents).version, 2);
   await assert.rejects(exportTokens({ out }, { createAuthenticator }), { code: 'export_file_unavailable' });
   assert.equal(await fs.readFile(out, 'utf8'), contents); assert.equal(acquired, 1);
   const link = path.join(directory, 'link.json'); await fs.symlink(out, link);
@@ -62,4 +63,15 @@ test('failed and interrupted exports remove incomplete files and close the brows
   const result = spawnSync(process.execPath, ['scripts/auth-export.js'], { encoding: 'utf8' });
   assert.equal(result.status, 1); assert.match(result.stderr, /export_path_required/);
   assert.ok(!result.stderr.includes('private provider response'));
+});
+
+test('v2 portable bundles retain renewal metadata and permit expired access tokens for online refresh validation', async () => {
+  const c = { ...signedBundle({ exp: 1 }), renewal: renewal() };
+  const raw = encodeTokenBundle(c), decoded = JSON.parse(raw);
+  assert.equal(decoded.version, 2); assert.deepEqual(decoded.renewal, c.renewal);
+  assert.equal((await validateTokenBundle(raw)).renewal.value, c.renewal.value);
+  for (const changes of [{ clientId: 'wrong' }, { origin: 'https://evil.test' }, { capturedAt: Date.now() + 3600_000 }, { sourceGrant: 'password' }, { value: '' }, { cookie: 'injected' }]) {
+    await assert.rejects(validateTokenBundle(JSON.stringify({ ...decoded, renewal: { ...decoded.renewal, ...changes } })), { code: 'invalid_token_bundle' });
+  }
+  await assert.rejects(validateTokenBundle(JSON.stringify({ ...decoded, version: 1 })), { code: 'invalid_token_bundle' });
 });

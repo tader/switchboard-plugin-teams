@@ -1,6 +1,6 @@
 {
   "name": "switchboard-plugin-teams",
-  "version": "0.7.1",
+  "version": "0.8.0",
   "private": true,
   "type": "module",
   "engines": {
@@ -13,6 +13,7 @@
     "smoke:legacy": "node scripts/smoke.js",
     "check:api": "node scripts/api-check.js",
     "install:local": "node scripts/install-local.js",
-    "auth:export": "node scripts/auth-export.js"
+    "auth:export": "node scripts/auth-export.js",
+    "check:auth-refresh": "node scripts/auth-refresh-check.js"
   }
 }

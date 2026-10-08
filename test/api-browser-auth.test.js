@@ -4,7 +4,7 @@ import fs from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
 import { generateKeyPairSync, sign } from 'node:crypto';
-import { BrowserAuthenticator } from '../lib/api-auth.js';
+import { LegacyBrowserAuthenticator as BrowserAuthenticator } from '../lib/api-auth.js';
 import { clientId } from '../lib/oauth.js';
 
 const tenant = '11111111-1111-1111-1111-111111111111', oid = '22222222-2222-2222-2222-222222222222';
