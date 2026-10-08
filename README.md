@@ -111,7 +111,7 @@ There is no fixed manual-login interval: Microsoft session expiry, MFA, revocati
 | Operation | API version |
 | --- | --- |
 | Chat/channel listing, recent chat messages | Supported |
-| Unread chats/messages | Supported, bounded conversation snapshot and consumption horizon |
+| Unread chats/messages | Supported, bounded CSA/regional chat discovery and consumption horizon |
 | Chat/channel history, NDJSON | Supported, server backward links and bounded cursors |
 | People search | Names through server suggestions; exact email/UPN verified separately |
 | Start conversation operation | Resolves an existing or account-bound virtual one-to-one chat; first send persists a new chat |
@@ -197,3 +197,21 @@ The normal Teams web app performs its authorization-code/PKCE flow. The plugin o
 The earlier Go compatibility probe was live-validated for OAuth, profile, conversation and recent-message reads. This Node implementation has automated fixture coverage for authentication, renewal, portable token export/import, restart recovery, account isolation, request routing, pagination, token redaction, write payloads and duplicate protection. A real portable bundle passed read-only token exchange, account binding and conversation validation on the authentication machine. Central reconnect upload, renewal across the SPA expiry boundary and saved-session browser recovery still need validation. Authorized chat sends, quotes/mentions, edit/delete and reaction readback passed; recipient notification and new-chat persistence remain unverified. Teams private endpoints can change independently of this plugin. See [API sources](THIRD_PARTY.md).
 
 This implementation and its tests were written by OpenAI Codex at Thomas de Ruiter's request. Independent code review remains outstanding.
+
+### Conversation discovery
+
+`listTeamsChats` combines the CSA snapshot with up to ten regional pages of 100
+conversations within a 30-second scan budget. A partial CSA snapshot triggers
+the same fallback for triage. Existing CSA metadata takes precedence; new chat
+and meeting IDs are deduplicated and unread state remains unknown when native
+horizons/bookmarks are unavailable. `discovery` reports pages, added chats and
+incomplete/error coverage. Team/channel discovery still uses CSA.
+
+For larger inventories, use `pageTeamsChatDiscovery` with `limit` (1–100) and
+follow `nextCursor` while `hasMore=true`, including after an empty page. Keep
+limit unchanged; cursors bind account and expire after 30 minutes or reload.
+Replay returns the same page, overlapping IDs are deduplicated and cycles/caps
+report truncation. Notes, spaces and system streams are excluded. An ended
+regional traversal does not establish a complete archive. Exact selected chats
+outside the automatic scan can resolve through current roster and metadata
+reads; newly discovered chats require a fresh roster check before message writes.

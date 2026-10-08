@@ -117,6 +117,8 @@ export async function createAdapter(ctx, {
         if (!['json', 'ndjson'].includes(format) || cursor && !/^[a-f0-9-]{36}$/.test(cursor)) throw new AdapterError('invalid_query', 'Use a returned cursor and json or ndjson format.', 400);
         operation = threads[3] === 'messages' ? () => api.threadMessages(id, parentMessageId, limit) :
           () => api.history(id, { limit, format, cursor, kind: 'channel', parentMessageId, rootsOnly: !parentMessageId });
+      } else if (request.method === 'GET' && url.pathname === '/chats/discovery') {
+        const limit = integer(url, 'limit', 100, 1, 100), cursor = url.searchParams.get('cursor') ?? undefined; operation = () => api.discoverChats({ limit, cursor, signal: controller.signal });
       } else if (request.method === 'GET' && ['/chats', '/unread/chats'].includes(url.pathname)) {
         const unread = url.pathname === '/unread/chats' || boolean(url, 'unreadOnly'); operation = () => api.chats(unread);
       } else if (request.method === 'GET' && url.pathname === '/channels') operation = () => api.channels();

@@ -167,3 +167,38 @@ The full suite passed 158 tests after the fix.
 These checks validate adapter-to-server writes and matching readback on this
 account. They do not establish recipient delivery/notifications, native UI
 rendering, custom reaction support, channel writes or new-chat persistence.
+
+## Regional conversation discovery
+
+The primary pinned chat-service reference lists account conversations at
+`/v1/users/ME/conversations?view=mychats&pageSize=<limit>` and follows the server's
+backwardLink. Live links replace ME with the signed-in account MRI. The adapter
+accepts only the fixed regional origin and these two exact account paths, with
+no credentials/fragments. Foreign account/resource links, malformed schemas,
+cycles and redirects do not become successful empty discovery.
+
+`pageTeamsChatDiscovery` pages ordinary chat/meeting records, excludes Notes,
+spaces and system streams, deduplicates overlaps and preserves continuation even
+when filtering leaves an empty page. Cursor replay binds account/limit and lasts
+30 minutes or until reload, with 1,000 cursor and 100,000 observed-ID bounds.
+Listing combines CSA with ten regional pages of 100 within 30 seconds; partial
+CSA snapshots invoke the same fallback for triage. Failures preserve known chats
+and report incomplete coverage; unauthorized/rate-limited requests propagate.
+CSA records take precedence. Native marker triples preserve cleared/active
+bookmark behavior; missing/malformed boundaries remain unknown. Partial channel
+discovery is still reported independently through triage coverage.
+
+Selected chat IDs beyond the automatic scan resolve via current roster membership
+and exact account-scoped conversation metadata. The metadata ID/type must match
+an ordinary chat/meeting. Newly discovered chat message writes recheck the roster
+for the signed-in MRI; enumeration alone does not authorize arbitrary threads.
+
+On 2026-10-08 live traversal completed in seven pages with 569 chats and 25
+excluded conversations; continuation replay was stable. The real CSA snapshot
+already contained those chats. A locally modified partial snapshot retaining one
+CSA chat recovered 568 omitted chats from live regional reads. Exact chat reads,
+current roster checks and direct resolution with a locally empty CSA chat list
+also passed. These simulations test fallback against live metadata, not an
+observed production partial response. No writes or fresh sign-ins occurred.
+All 168 tests passed, including HTTP routing, empty-page/overlap continuation,
+scoped replay, malformed/foreign links, bounded failure coverage and roster denial.

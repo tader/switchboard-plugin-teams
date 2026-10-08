@@ -44,6 +44,7 @@ async function fixture(t, { forbidBrowser = false, dataDir, peerMessages = false
       const token = options.headers.Authorization.slice(7);
       if (!token.startsWith('csa-') && !serverAccepts(token)) return new Response(null, { status: 401 });
     }
+    if (url.pathname.endsWith('/users/ME/conversations')) return response({ conversations: [], _metadata: {} });
     if (parity) {
       if (url.pathname.endsWith('/teams/users/me')) return response({ chats: [{ id: thread, isOneOnOne: true, members: [] }], teams: [{ channels: [{ id: '19:channel@thread.tacv2', isMember: true }] }] });
       if (url.hostname === 'substrate.office.com') return url.pathname.endsWith('/suggestions') ? response({ Groups: [{ Type: 'People', Suggestions: [{ MRI: '8:orgid:33333333-3333-3333-3333-333333333333', DisplayName: 'Peer', EmailAddresses: ['peer@example.com'] }] }] }) : response({ EntitySets: [{ ResultSets: [{ Results: [{ Source: { WebUrl: `https://teams.microsoft.com/l/message/${encodeURIComponent(thread)}/100`, Preview: 'Hit' } }], MoreResultsAvailable: false }] }] });
@@ -499,4 +500,15 @@ test('restored parity routes acquire search tokens before host persistence and r
   assert.equal((await f.call(connection, `/channels/${channelId}/threads/100/history?format=ndjson`)).body.parentMessageId, '100');
   assert.equal((await f.call(connection, `/channels/${channelId}/threads`, 'POST', { text: 'No channel write' })).status, 501);
   assert.equal((await f.call(connection, '/search/messages?query=test&limit=0')).status, 400);
+});
+
+
+test('discovery HTTP route authenticates, validates limits and returns read-only coverage', async t => {
+  const f = await fixture(t), connection = await f.connect();
+  const result = await f.call(connection, '/chats/discovery?limit=2');
+  assert.equal(result.status, 200); assert.equal(result.body.discoveryComplete, true);
+  assert.equal(result.body.mayMarkRead, false);
+  assert.equal((await f.call(connection, '/chats/discovery?limit=101')).status, 400);
+  assert.equal((await f.call(connection, '/chats/discovery?cursor=foreign')).status, 400);
+  assert.equal(f.authCalls.length, 1);
 });

@@ -26,6 +26,9 @@ async function fixture(t, { protocols = triageProtocols, readProtocols = disable
     const url = new URL(value); requests.push({ url, ...options });
     const response = value => new Response(JSON.stringify(value), { status: 200 });
     if (url.pathname.endsWith('/teams/users/me')) return response({ chats: data.chats, teams: data.teams, metadata: data.metadata ?? {} });
+    if (url.pathname.endsWith('/users/ME/conversations')) return response({ conversations: [], _metadata: {} });
+    const roster = url.pathname.match(/\/threads\/([^/]+)\/members$/);
+    if (roster) return new Response(null, { status: 404 });
     const native = url.pathname.match(/\/conversations\/([^/]+)$/);
     if (native) {
       const thread = decodeURIComponent(native[1]), chat = data.chats.find(item => item.id === thread);
