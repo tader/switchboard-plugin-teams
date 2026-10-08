@@ -9,7 +9,7 @@ import { Readable } from 'node:stream';
 import { createAdapter } from '../index.js';
 import { TeamsSession, exchangeChatToken } from '../lib/api-auth.js';
 import { TeamsTriage, readStateProtocols } from '../lib/triage.js';
-import { TeamsAPI, messagePayload } from '../lib/teams-api.js';
+import { TeamsAPI, messagePayload, encodeConversation } from '../lib/teams-api.js';
 import { requestJSON, chatOrigin, tokenClaims } from '../lib/api-http.js';
 import { AdapterError } from '../lib/errors.js';
 import { encodeTokenBundle } from '../lib/token-bundle.js';
@@ -227,7 +227,7 @@ test('triage HTTP routes validate, bind targets to profiles and preserve accepte
   assert.equal(replay.body.items[0].send.replayed, true);
   assert.equal(restarted.requests.filter(request => request.method === 'POST' && request.url.pathname.endsWith('/messages')).length, 0);
   const caps = (await restarted.call(saved, '/capabilities')).body;
-  assert.equal(caps.triage.inbox, true); assert.equal(caps.triage.channelReplies, false);
+  assert.equal(caps.triage.inbox, true); assert.equal(caps.triage.channelReplies, true);
 });
 
 test('API writes preserve duplicate protection, quarantine uncertain sends and validate before dispatch', async t => {
@@ -511,4 +511,16 @@ test('discovery HTTP route authenticates, validates limits and returns read-only
   assert.equal((await f.call(connection, '/chats/discovery?limit=101')).status, 400);
   assert.equal((await f.call(connection, '/chats/discovery?cursor=foreign')).status, 400);
   assert.equal(f.authCalls.length, 1);
+});
+
+test('direct channel reply route binds exact roots and replays acceptance without dispatching twice', async t => {
+  const f = await fixture(t, { parity: true }), connection = await f.connect();
+  const channelId = encodeConversation('channel', '19:channel@thread.tacv2');
+  const route = `/channels/${channelId}/threads/100/messages`, input = { text: 'A channel reply', idempotencyKey: 'direct-channel-route-key' };
+  const first = await f.call(connection, route, 'POST', input);
+  assert.equal(first.status, 200); assert.equal(first.body.status, 'accepted_by_api'); assert.equal(first.body.parentMessageId, '100');
+  const replay = await f.call(connection, route, 'POST', input); assert.equal(replay.body.replayed, true);
+  assert.equal(f.requests.filter(r => r.method === 'POST' && r.url.pathname.endsWith('/messages')).length, 1);
+  assert.equal((await f.call(connection, `/channels/${channelId}/threads/101/messages`, 'POST', input)).status, 409);
+  assert.equal((await f.call(connection, route, 'POST', { ...input, replyToMessageId: '100' })).status, 400);
 });

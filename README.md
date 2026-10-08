@@ -2,7 +2,7 @@
 
 Version 0.11.0 supports direct Teams private API calls with local browser sign-in or imported tokens. Chrome or Edge captures renewal credentials during normal Teams sign-in, then closes. Access tokens renew through HTTP using the existing Teams public client ID, without a client secret or browser. A central Switchboard can import tokens from another machine and run without Chrome or Edge. No Go, Electron, Microsoft Graph registration, npm dependencies, or persistent Teams tab is required. Node 24+ is required.
 
-For unread triage, prefer `getTeamsTriageInbox`, `getTeamsReplyContexts` and `replyTeamsBatch`. The inbox groups chats and channel threads; native quoted chat replies have durable duplicate protection. `setTeamsReadState` marks chat messages read or unread at an exact selected boundary. **Channel replies, channel read state and automatic read-after-reply remain disabled pending live protocol verification.** See [triage protocol status](docs/triage-protocol.md).
+For unread triage, prefer `getTeamsTriageInbox`, `getTeamsReplyContexts` and `replyTeamsBatch`. The inbox groups chats and channel threads; native quoted chat replies have durable duplicate protection. `setTeamsReadState` marks chat messages read or unread at an exact selected boundary. **Exact-root channel replies are supported; channel read state and automatic read-after-reply remain disabled.** See [triage protocol status](docs/triage-protocol.md).
 
 The service ID remains `teams-web`, and the existing browser authentication method remains `browser`, so existing Switchboard connections can be reconnected in place. The previous DOM adapter is retained in `legacy-index.js` for regression testing; production does not invoke it.
 
@@ -120,10 +120,11 @@ There is no fixed manual-login interval: Microsoft session expiry, MFA, revocati
 | Grouped unread triage and batch context | Chats and channel threads; bounded, paginated coverage |
 | Native quoted chat replies | `replyTeamsBatch` or ordinary sends with exact `replyToMessageId` |
 | Channel roots, exact thread reads/history | Direct restored routes, cursor replay and NDJSON; also triage context |
-| Channel replies and read-after-reply | Implemented behind disabled protocol-verification gates |
+| Channel replies | Exact-root replies with durable replay and root-bound verification; live send validation pending |
+| Automatic read-after-reply | Implemented behind a disabled protocol-verification gate |
 | Selected-message read/unread | `setTeamsReadState` supports chat read/unread; channel gates defer |
 | Message search/open result | Server-backed queries and exact account-bound result context |
-| Attachments and channel writes | Unsupported or disabled |
+| Attachments and starting channel threads | Unsupported |
 
 Unsupported operations are removed from the advertised OpenAPI schema; saved calls fail explicitly. `getTeamsCapabilities` reports the supported subset. Conversation data can be partial, and retained history is not a guaranteed complete archive. API reads do not send read markers.
 
@@ -136,6 +137,16 @@ Name-based people search and message search acquire an optional Substrate access
 `startTeamsConversation` accepts one exact directory email. With no text, it returns an existing chat or a virtual one-to-one chat with `persisted=false` and sends nothing. The first message persists a new chat; use an idempotency key. The virtual ID binds the account and re-resolved recipient and works after reload. This does not create groups or search external federation.
 
 Ordinary `sendTeamsMessage` accepts `replyToMessageId` from an ordinary read or opened search hit. It reads the exact message directly and rechecks content/version immediately before dispatch. Structured content accepts person mention runs; the exact email is resolved again, and server directory names/MRIs supply escaped markup and mention metadata. These sends, triage replies and edits share mention handling. Existing quoted messages and attachments cannot be edited.
+
+`replyTeamsChannelThread` sends text or structured content beneath an exact
+`channelId`/`parentMessageId`. It supports mentions and automatic URL links,
+rechecks membership, archived/disabled status and root content/version before
+dispatch, and preserves durable acceptance/replay. `verification.threadConfirmed`
+requires matching root metadata in readback; acceptance alone is not proof of
+thread placement or delivery. `replyTeamsBatch` also supports channel targets.
+Channel read markers and automatic read-after-reply remain disabled. The send
+contract is source-verified and fixture-tested; designated live send validation
+remains pending.
 
 `listTeamsChannelThreads` pages channel roots independently of unread state. `readTeamsChannelThread` reads the exact root and composite reply conversation. `pageTeamsChannelThreadHistory` supports backward-link cursors, replay, overlap deduplication and NDJSON. Cursors bind account, channel/root, limit and format. Each thread response includes its root; the initial page can contain that root in addition to `limit` replies. Continue while `hasMore`, including empty filtered root pages. `completeHistory=false` reflects retention/unavailable history.
 

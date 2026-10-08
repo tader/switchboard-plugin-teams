@@ -227,3 +227,29 @@ A subsequent plain-text edit with an ampersand query produced an escaped anchor
 and observed matching state. The temporary message was deleted with an observed
 tombstone. Saved credentials were reused without a new sign-in. This validates
 server HTML readback; native UI clicking was not exercised. All 173 tests passed.
+
+## Channel replies
+
+The pinned primary client's message action appends `;messageid=<root>` before
+calling its regional postMessage method. This verifies the composite send
+contract independently of fixture acceptance. Direct replyTeamsChannelThread
+and triage replies share exact-root preparation; starting a new channel thread
+is outside this PR. Membership and archived/disabled status are checked, and
+root content/version is rechecked immediately before dispatch. Private endpoints
+still offer no atomic guard after that read.
+
+Existing live channel reply reads on 2026-10-08 returned `rootMessageId` matching
+the selected root and `conversationid` matching its base channel. Normalization
+uses that field for replies while keeping a root's own rootMessageId from
+classifying it as a reply. Confirmation requires exact author, client ID,
+content/type/mentions and root association; contradictory parent metadata or a
+foreign conversation cannot report threadConfirmed. Missing association remains
+not_observed rather than inferred success.
+
+The accepted receipt is saved before readback and replay never resends. Direct
+and batched replies preserve separate deferred read stages: channel read markers
+and automatic read-after-reply remain disabled. All 180 tests pass, including
+HTTP routing, archived/absent membership, reply-as-root, changed root/permissions,
+wrong/missing association, uncertainty and durable replay. No channel test reply
+has been sent; designated-thread live send and cleanup remain pending. Other
+roadmap implementation is reserved for the next PR.

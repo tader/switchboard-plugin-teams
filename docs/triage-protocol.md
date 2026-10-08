@@ -15,7 +15,7 @@ completeness or writes.
 | Chat quote | [Inline quote builder](https://github.com/Maxim-Mazurok/teams-api/blob/e109d58122160c59cc210ec3284cd5a3d0f5ac8c/src/html-utils.ts), [chat send](https://github.com/Maxim-Mazurok/teams-api/blob/e109d58122160c59cc210ec3284cd5a3d0f5ac8c/src/api/chat-service.ts) | Source-verified and fixture-tested, not live-validated |
 | Channel thread reads | [Thread conversation IDs and reads](https://github.com/Maxim-Mazurok/teams-api/blob/e109d58122160c59cc210ec3284cd5a3d0f5ac8c/src/teams-client.ts) | Source-verified and fixture-tested, bounded reads |
 | Channel unread metadata | [CSA channel and horizon models](https://github.com/fossteams/teams-api/blob/dbbdc3681f32/pkg/models/teams.go) | Require explicit unread flag and valid horizon; unknown data is a coverage issue |
-| Channel reply | Candidate composite conversation POST | **Disabled** pending a captured native Teams request and designated-thread validation |
+| Channel reply | Pinned primary message action appends the root to its regional POST; existing live reply reads verified rootMessageId association | **Enabled**, source-verified and fixture-tested; designated live send pending |
 | Explicit chat read/unread | Native horizon/bookmark requests and browser-closed regional API readback, 2026-10-08 | **Enabled** for selected-message chat boundaries |
 | Channel read/unread and automatic read-after-reply | Scope/bookmark interaction not live-verified | **Disabled**; successful replies report `read.status=deferred`, `reason=protocol_unverified` |
 
@@ -23,15 +23,15 @@ Chat quotes independently construct escaped microdata identifying the exact
 message and sender, include at most 200 characters of preview, and use the
 existing rich-text send contract. No upstream implementation is bundled.
 
-Channel replies and automatic read-after-reply remain behind disabled
-immutable production gates in `lib/triage.js`. Explicit chat read state has
+Channel replies now share the exact-root direct reply implementation. Automatic
+read-after-reply remains behind a disabled immutable production gate in `lib/triage.js`. Explicit chat read state has
 separate enabled gates. Tests inject enabled contracts only
 to exercise queueing, durable read stages and conservative advancement. Those
 tests establish local behavior, not server compatibility. Synthetic redacted
 examples in `test/fixtures/triage.json` are labeled accordingly.
 
-Before enabling either write gate, capture the native Teams request in an
-explicitly designated test chat/channel. Record the endpoint, non-secret body,
+Before enabling automatic read or channel read-state gates, capture native marker
+requests in an explicitly designated test chat/channel. Record the endpoint, non-secret body,
 read-marker scope and successful response; replace identifiers, people and text
 with synthetic values before adding fixtures. Verify the actual channel reply
 appears beneath its intended root. Verify the marker advances only through the

@@ -111,6 +111,12 @@ export async function createAdapter(ctx, {
         const input = await body(request, ['resultId']);
         if (typeof input.resultId !== 'string' || !/^[a-f0-9-]{36}$/.test(input.resultId)) throw new AdapterError('invalid_search_result', 'Use a returned search resultId.', 400);
         operation = () => api.openSearchResult(input.resultId);
+      } else if (request.method === 'POST' && threads?.[2] && threads[3] === 'messages') {
+        const id = decodeURIComponent(threads[1]), parentMessageId = messageId(decodeURIComponent(threads[2]));
+        const input = contentInput(await body(request, ['text', 'content', 'idempotencyKey']));
+        operation = () => ledger.run(input.idempotencyKey, ['api-channel-reply', api.account(), id, parentMessageId, input],
+          () => api.prepareChannelReply(id, parentMessageId, input), prepared => { checkCancelled(); return api.send(prepared, controller.signal); },
+          'send_uncertain', (result, context) => api.confirm(result, context, controller.signal));
       } else if (request.method === 'GET' && threads) {
         const id = decodeURIComponent(threads[1]), parentMessageId = threads[2] ? messageId(decodeURIComponent(threads[2])) : null;
         const limit = integer(url, 'limit', 100, 1, 200), format = url.searchParams.get('format') ?? 'json', cursor = url.searchParams.get('cursor') ?? undefined;

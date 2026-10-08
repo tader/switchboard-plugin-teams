@@ -38,6 +38,11 @@ async function fixture(t, { protocols = triageProtocols, readProtocols = disable
       }
       return response({ properties: nativeStates.get(thread) });
     }
+    const exact = url.pathname.match(/\/conversations\/([^/]+)\/messages\/([^/]+)$/);
+    if (exact) {
+      const raw = data.messages[decodeURIComponent(exact[1])]?.find(message => message.id === exact[2]);
+      return raw ? response(raw) : new Response(null, { status: 404 });
+    }
     const match = url.pathname.match(/\/conversations\/([^/]+)\/(messages|properties)$/);
     assert.ok(match, 'expected regional request'); const thread = decodeURIComponent(match[1]);
     if (match[2] === 'messages' && !options.method) {
@@ -47,7 +52,7 @@ async function fixture(t, { protocols = triageProtocols, readProtocols = disable
     if (options.method === 'POST') {
       state.sends++; if (state.failSend) throw new Error('connection lost');
       const payload = JSON.parse(options.body), time = fixtureData.boundary + 9000 + state.sends;
-      data.messages[thread].push({ ...rawMessage(time, payload.content, '8:orgid:self'), messagetype: payload.messagetype, clientmessageid: payload.clientmessageid });
+      data.messages[thread].push({ ...rawMessage(time, payload.content, '8:orgid:self'), messagetype: payload.messagetype, clientmessageid: payload.clientmessageid, ...(thread.includes(';messageid=') ? { rootMessageId: thread.split(';messageid=')[1] } : {}) });
       state.afterSend?.(thread); return response({ OriginalArrivalTime: time });
     }
     if (options.method === 'PUT') {
@@ -81,7 +86,7 @@ test('grouped inbox prioritizes mentions/direct chats, groups channel replies an
   assert.equal(result.items[1].unread[0].authorId, '8:orgid:peer');
   assert.equal(result.items[3].parentMessageId, root);
   assert.equal(result.items[3].unread.length, 2);
-  assert.equal(result.items[3].canReply, false);
+  assert.equal(result.items[3].canReply, true);
   assert.equal(result.items[0].context.length, 0, 'unread messages are not duplicated in context');
   assert.equal(result.completeAccount, false); assert.equal(result.mayMarkRead, false);
   assert.equal(f.state.marks, 0); assert.equal(f.state.sends, 0);
@@ -206,12 +211,12 @@ test('unhandled sibling channel thread defers marking; later reply makes advance
   assert.ok(decodeURIComponent(posts[0].url.pathname).includes(`;messageid=${root}/messages`));
 });
 
-test('partial windows never mark read; production channel replies fail without dispatch', async t => {
+test('partial windows never mark read; explicitly disabled channel replies fail without dispatch', async t => {
   const f = await fixture(t, { protocols: enabled, readProtocols: disabledReads });
   f.links.set(f.data.chats[0].id, `${f.api.credentials.messageOrigin}/v1/users/ME/conversations/${encodeURIComponent(f.data.chats[0].id)}/messages?older=1`);
   const result = await f.triage.replies({ replies: [reply((await f.triage.inbox()).items[0])] });
   assert.equal(result.items[0].read.reason, 'incomplete_unread_window'); assert.equal(f.state.marks, 0);
-  const production = await fixture(t), group = (await production.triage.inbox()).items.find(group => group.kind === 'channel');
+  const production = await fixture(t, { protocols: { ...triageProtocols, channelReplies: false } }), group = (await production.triage.inbox()).items.find(group => group.kind === 'channel');
   assert.equal((await production.triage.replies({ replies: [reply(group)] })).items[0].send.error.code, 'api_operation_unsupported');
   assert.equal(production.state.sends, 0);
 });
