@@ -8,6 +8,7 @@ import { EventEmitter } from 'node:events';
 import { Readable } from 'node:stream';
 import { createAdapter } from '../index.js';
 import { TeamsSession, exchangeChatToken } from '../lib/api-auth.js';
+import { TeamsTriage, readStateProtocols } from '../lib/triage.js';
 import { TeamsAPI, messagePayload } from '../lib/teams-api.js';
 import { requestJSON, chatOrigin, tokenClaims } from '../lib/api-http.js';
 import { AdapterError } from '../lib/errors.js';
@@ -18,7 +19,7 @@ const thread = '19:test@thread.v2';
 const expiry = () => Date.now() + 3600_000;
 const bundle = profile => ({ profile, authVersion: 1, identity: { tenant: '11111111-1111-1111-1111-111111111111', oid: profile, name: 'Test user', email: 'test@example.com' },
   tokens: { skype: { value: 'skype-' + profile, expiresAt: expiry() }, chatsvcagg: { value: 'csa-' + profile, expiresAt: expiry() } } });
-async function fixture(t, { forbidBrowser = false, dataDir, peerMessages = false } = {}) {
+async function fixture(t, { forbidBrowser = false, dataDir, peerMessages = false, readProtocols = { chat: { read: false, unread: false }, channel: { read: false, unread: false } } } = {}) {
   const directory = dataDir ?? await fs.mkdtemp(path.join(os.tmpdir(), 'teams-api-test-'));
   const requests = [], sessions = new Map(), authCalls = []; let handler, failSend = false, pageLink = null, authFailure = false, rejectDirectory = false, rejectAuthz = false, refreshFailure = null, failSecondRefresh = false, refreshCount = 0;
   const response = value => new Response(JSON.stringify(value), { status: 200 });
@@ -63,6 +64,7 @@ async function fixture(t, { forbidBrowser = false, dataDir, peerMessages = false
         return { async acquire(options) { authCalls.push(options); if (authFailure) throw new AdapterError('signin_required', 'Sign in again.', 503); return bundle(profile); }, async close() {},
       }; } }); sessions.set(profile, session); return session;
     }, createAPI: session => new TeamsAPI(session, { fetcher }),
+    createTriage: (api, ledger) => new TeamsTriage(api, ledger, { readProtocols }),
     createServer(callback) {
       handler = callback; const server = new EventEmitter();
       server.listen = (_, host, done) => { assert.equal(host, '127.0.0.1'); done(); };
@@ -417,4 +419,32 @@ test('the identity returned by the trusted Teams auth service must match the imp
   const credentials = { ...signedBundle(), authMode: 'tokens' };
   const fetcher = async () => new Response(JSON.stringify({ tokens: { skypeToken: signedToken('skype', { skypeid: 'orgid:33333333-3333-3333-3333-333333333333' }), expiresIn: 3600 }, region: 'emea' }));
   await assert.rejects(exchangeChatToken(credentials, fetcher), { code: 'account_mismatch' });
+});
+
+test('read-state HTTP route validates input and exposes independent disabled capabilities', async t => {
+  const f = await fixture(t, { peerMessages: true }), a = await f.connect(), b = await f.connect();
+  const group = (await f.call(a, '/triage/inbox')).body.items[0];
+  const input = { updates: [{ target: group.replyTarget, state: 'read', idempotencyKey: 'http-read-state-001' }] };
+  const result = await f.call(a, '/triage/read-state', 'POST', input);
+  assert.equal(result.status, 200); assert.equal(result.body.items[0].reason, 'protocol_unverified');
+  assert.equal((await f.call(b, '/triage/read-state', 'POST', input)).body.items[0].error.code, 'invalid_reply_target');
+  assert.equal((await f.call(a, '/triage/read-state', 'POST', { ...input, unknown: true })).status, 400);
+  assert.equal((await f.call(a, '/triage/read-state', 'POST', { updates: [{ ...input.updates[0], state: 'toggle' }] })).status, 400);
+  const caps = (await f.call(a, '/capabilities')).body;
+  assert.deepEqual(caps.triage.readState, readStateProtocols);
+  assert.equal(f.requests.filter(request => ['PUT', 'POST', 'PATCH'].includes(request.method) && request.url.pathname.includes('/conversations/')).length, 0);
+});
+
+test('read-state token rejection updates auth status and stops remaining batch items', async t => {
+  const f = await fixture(t, { peerMessages: true, forbidBrowser: true, readProtocols: { chat: { read: true } } });
+  const connection = await f.tokenAuth.connect({ config: { tokenBundle: encodeTokenBundle(signedBundle()) } });
+  const target = (await f.call(connection, '/triage/inbox')).body.items[0].replyTarget;
+  f.setRejectDirectory(true);
+  const result = await f.call(connection, '/triage/read-state', 'POST', { updates: [
+    { target, state: 'read', idempotencyKey: 'auth-read-state-001' }, { target, state: 'read', idempotencyKey: 'auth-read-state-002' },
+  ] });
+  assert.equal(result.body.items[0].error.code, 'token_import_required');
+  assert.equal(result.body.items[1].status, 'not_attempted');
+  assert.equal((await f.call(connection, '/status')).body.tokenImportRequired, true);
+  assert.equal(f.authCalls.length, 0);
 });

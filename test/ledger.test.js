@@ -63,3 +63,23 @@ test('mutation intent binds operation, target and payload, survives restart, and
   assert.equal(cleanups, 2);
   await assert.rejects(new SendLedger(dir).mutate('mutation-002', ['delete', 'chat1', 'message1'], {}, () => assert.fail(), () => assert.fail()), { code: 'mutation_uncertain' });
 });
+
+test('read-state generations are separate from operation keys and uncertainty persists before dispatch', async t => {
+  const dir = await fs.mkdtemp('/tmp/teams-read-ledger-'); t.after(() => fs.rm(dir, { recursive: true, force: true }));
+  const ledger = new SendLedger(dir), guard = { account: 'a', threadId: 'chat', generation: 0, unread: true };
+  await assert.rejects(ledger.run('unread-ledger-001', ['unread'], async () => ({ readStateGuard: guard }), async () => {
+    const state = (await new SendLedger(dir).readStates('a')).get('chat');
+    assert.deepEqual(state, { account: 'a', threadId: 'chat', generation: 1, blocked: true });
+    throw new Error('crashed');
+  }, 'mutation_uncertain'), /crashed/);
+  assert.equal((await new SendLedger(dir).readStates('a')).get('chat').blocked, true);
+  assert.equal((await ledger.readStates('b')).size, 0);
+  const metadataKey = Object.keys(await ledger.read()).find(key => key.startsWith('read-state:'));
+  await ledger.run(metadataKey, ['send'], async () => ({}), async () => ({ status: 'sent' }), 'send_uncertain');
+  assert.equal((await ledger.readStates('a')).get('chat').generation, 1);
+  await assert.rejects(ledger.run('stale-generation-001', ['read'], async () => ({ readStateGuard: { ...guard, unread: false } }), () => assert.fail(), 'mutation_uncertain'), { code: 'read_state_changed' });
+  const result = await ledger.run('fresh-generation-001', ['read'], async () => ({ readStateGuard: { ...guard, generation: 1, unread: false } }), async () => ({ status: 'updated' }), 'mutation_uncertain');
+  assert.equal((await ledger.readStates('a')).get('chat').blocked, false);
+  assert.equal((await ledger.readStates('a')).get('chat').generation, 1);
+  assert.deepEqual(await new SendLedger(dir).run('fresh-generation-001', ['read'], () => assert.fail(), () => assert.fail(), 'mutation_uncertain'), { ...result, replayed: true });
+});
