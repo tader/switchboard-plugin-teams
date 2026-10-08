@@ -202,3 +202,28 @@ also passed. These simulations test fallback against live metadata, not an
 observed production partial response. No writes or fresh sign-ins occurred.
 All 168 tests passed, including HTTP routing, empty-page/overlap continuation,
 scoped replay, malformed/foreign links, bounded failure coverage and roster denial.
+
+## Automatic URL links
+
+Bare HTTP(S) URL detection runs on caller text before HTML escaping, not on
+existing HTML. Eligible URLs become escaped anchor runs; the visible label keeps
+the original URL spelling while the destination uses URL normalization. Plain
+text with no eligible URL keeps its Text payload. Structured explicit links and
+code-marked runs are untouched. Shared payload construction covers ordinary
+sends, initial conversation sends, edits and triage replies; native quote
+previews remain escaped text. No Markdown/caller HTML parsing or URL fetching
+is added.
+
+Trailing sentence punctuation and unmatched closing brackets remain outside
+anchors; balanced URL parentheses are retained. Credentials, backslashes,
+malformed URLs and URLs over 2,000 characters are not linked. Detection is
+bounded by existing text limits; punctuation trimming is linear. Explicit links
+are the exact-destination option for ambiguous punctuation and custom labels.
+
+On 2026-10-08 an authorized temporary message in the Brandon chat was sent from
+plain text containing a bare PR URL. Exact readback observed an anchor with the
+terminal sentence period outside it. Same-key replay caused no additional send.
+A subsequent plain-text edit with an ampersand query produced an escaped anchor
+and observed matching state. The temporary message was deleted with an observed
+tombstone. Saved credentials were reused without a new sign-in. This validates
+server HTML readback; native UI clicking was not exercised. All 173 tests passed.

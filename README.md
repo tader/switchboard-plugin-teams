@@ -115,7 +115,7 @@ There is no fixed manual-login interval: Microsoft session expiry, MFA, revocati
 | Chat/channel history, NDJSON | Supported, server backward links and bounded cursors |
 | People search | Names through server suggestions; exact email/UPN verified separately |
 | Start conversation operation | Resolves an existing or account-bound virtual one-to-one chat; first send persists a new chat |
-| Chat sends and edits | Plain text or structured formatting, links and exact-email person mentions |
+| Chat sends and edits | Text with automatic URL links, structured formatting and exact-email person mentions |
 | Delete own chat message; add/remove reaction | Supported |
 | Grouped unread triage and batch context | Chats and channel threads; bounded, paginated coverage |
 | Native quoted chat replies | `replyTeamsBatch` or ordinary sends with exact `replyToMessageId` |
@@ -181,6 +181,17 @@ For formatted sends/edits, use `content` instead of `text`, for example:
 ```json
 {"content":[{"type":"paragraph","runs":[{"text":"Hello","marks":["bold"]}]}],"idempotencyKey":"example-unique-key"}
 ```
+
+Bare `http://` and `https://` URLs automatically become HTML links in ordinary
+text and structured text runs, consistently across sends, replies and edits.
+Trailing sentence punctuation and unmatched closing brackets stay outside the
+link; balanced parentheses in URLs are retained. Text without eligible URLs
+keeps the plain-text payload. URLs with credentials, backslashes, malformed
+addresses or more than 2,000 characters remain literal. Explicit links and runs
+marked `code` are preserved. No Markdown or caller HTML is interpreted.
+
+For custom labels or URLs with ambiguous trailing punctuation, use an explicit
+link run such as `{"text":"View the PR","link":"https://github.com/tader/switchboard-plugin-teams/pull/4"}`.
 
 Supported blocks: paragraph, quote, bulletedList and numberedList. Marks: bold, italic, underline, strike and code; links must use HTTP(S). Structured quotes are formatting, not replies to another message. Person mention runs require exact directory emails; arbitrary HTML is refused. Message HTML returned by reads is untrusted data.
 
