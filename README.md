@@ -1,8 +1,8 @@
 # Teams API plugin for Switchboard
 
-Version 0.10.0 supports direct Teams private API calls with local browser sign-in or imported tokens. Chrome or Edge captures renewal credentials during normal Teams sign-in, then closes. Access tokens renew through HTTP using the existing Teams public client ID, without a client secret or browser. A central Switchboard can import tokens from another machine and run without Chrome or Edge. No Go, Electron, Microsoft Graph registration, npm dependencies, or persistent Teams tab is required. Node 24+ is required.
+Version 0.11.0 supports direct Teams private API calls with local browser sign-in or imported tokens. Chrome or Edge captures renewal credentials during normal Teams sign-in, then closes. Access tokens renew through HTTP using the existing Teams public client ID, without a client secret or browser. A central Switchboard can import tokens from another machine and run without Chrome or Edge. No Go, Electron, Microsoft Graph registration, npm dependencies, or persistent Teams tab is required. Node 24+ is required.
 
-For unread triage, prefer `getTeamsTriageInbox`, `getTeamsReplyContexts` and `replyTeamsBatch`. The inbox groups chats and channel threads; native quoted chat replies have durable duplicate protection. `setTeamsReadState` marks chat messages read or unread at an exact selected boundary. **Channel replies, channel read state and automatic read-after-reply remain disabled pending live protocol verification.** See [triage protocol status](docs/triage-protocol.md).
+For unread triage, prefer `getTeamsTriageInbox`, `getTeamsReplyContexts` and `replyTeamsBatch`. The inbox groups chats and channel threads; native quoted chat replies have durable duplicate protection. `setTeamsReadState` marks chat messages read or unread at an exact selected boundary. **Exact-root channel replies are supported; channel read state and automatic read-after-reply remain disabled.** See [triage protocol status](docs/triage-protocol.md).
 
 The service ID remains `teams-web`, and the existing browser authentication method remains `browser`, so existing Switchboard connections can be reconnected in place. The previous DOM adapter is retained in `legacy-index.js` for regression testing; production does not invoke it.
 
@@ -78,7 +78,7 @@ TEAMS_LOGIN_HINT=Thomas.De-Ruiter@dsm-firmenich.com npm run check:api -- --silen
 
 `check:api` reuses the shared diagnostic session, renews expired tokens over HTTP, then reads your profile, conversation list and five recent messages from one chat. It prints only PASS markers and token expiry, never tokens or message content. The second command reuses the same session without interactive sign-in. `check:api`, `check:triage` and `check:auth-refresh` share `.local-profile/token-export/diagnostic-session.json` and its persistent browser profile. The first successful run saves the session; subsequent checks reuse it and renew over HTTP. The session file contains credentials, is owner-readable/writable only (0600), and is excluded from Git. These checks do not create a Switchboard connection. Use `--capture` only when explicitly testing a fresh browser capture. Set `TEAMS_BROWSER_PATH` to override browser detection. A successful silent check demonstrates current session reuse, not a guarantee about future company sign-in policy.
 
-After installing, run `getTeamsStatus`, `getTeamsCapabilities`, `listTeamsChats` and `readTeamsMessages` in Switchboard. Chrome should remain closed for data calls with fresh tokens. Verify an intended write manually in a designated test chat before depending on write operations. No real messages were sent during this implementation.
+After installing, run `getTeamsStatus`, `getTeamsCapabilities`, `listTeamsChats` and `readTeamsMessages` in Switchboard. Chrome should remain closed for data calls with fresh tokens. Verify an intended write manually in a designated test chat before depending on write operations. Authorized live chat writes and exact-message readback passed on 2026-10-08; temporary messages were deleted. See [protocol evidence](docs/parity-protocol.md).
 
 ## Authentication lifetime
 
@@ -98,7 +98,7 @@ The browser profile is separate at `.local-profile/refresh-check/auth-browser`. 
 
 By default, this command reuses the shared diagnostic session and forces an HTTP renewal. Add `--capture` to repeat the browser-capture compatibility probe. Neither mode changes existing Switchboard connections. Fixture success is not live compatibility evidence. A successful live run establishes capture, browser-closed HTTP renewal, account binding and the two API reads for that account on that machine. It does not establish refresh-token lifetime, recovery after its expiry, cookie-only renewal, or central-host compatibility. A captured rotated token can inherit an earlier SPA expiry; capture time is not a new 24-hour lifetime.
 
-On 2026-10-08, this diagnostic passed real browser capture after Microsoft Authenticator approval, browser-process exit, HTTP renewal of both Microsoft access tokens, chat-token exchange, account binding, profile and conversation reads on the user's Mac. Headless saved-session reacquisition has not passed. See [validation status](ROADMAP.md).
+On 2026-10-08, this diagnostic passed real browser capture after Microsoft Authenticator approval, browser-process exit, HTTP renewal of both Microsoft access tokens, chat-token exchange, account binding, profile and conversation reads on the user's Mac. Subsequent silent diagnostics reused the saved credential cache and forced HTTP renewal without opening a browser. Headless browser reacquisition after credential expiry has not passed. See [validation status](ROADMAP.md).
 
 Tokens have individual expiry timestamps. Before a data call, the plugin renews when less than two minutes remain. An expired chat-service token can be exchanged over HTTP while its source token remains valid. New browser connections and version 2 imported bundles renew Microsoft access tokens over HTTP. Existing browser connections acquire refresh support on reconnect or their next successful browser authentication. Browser connections attempt saved-session browser reacquisition only after terminal refresh rejection; imported connections require re-export instead.
 
@@ -111,20 +111,46 @@ There is no fixed manual-login interval: Microsoft session expiry, MFA, revocati
 | Operation | API version |
 | --- | --- |
 | Chat/channel listing, recent chat messages | Supported |
-| Unread chats/messages | Supported, bounded conversation snapshot and consumption horizon |
+| Unread chats/messages | Supported, bounded CSA/regional chat discovery and consumption horizon |
 | Chat/channel history, NDJSON | Supported, server backward links and bounded cursors |
-| Person lookup | Exact email/UPN only |
-| Start conversation operation | Resolves an existing one-to-one chat; cannot create a new one |
-| Chat sends and edits | Plain text or structured formatting and links |
+| People search | Names through server suggestions; exact email/UPN verified separately |
+| Start conversation operation | Resolves an existing or account-bound virtual one-to-one chat; first send persists a new chat |
+| Chat sends and edits | Text with automatic URL links, structured formatting and exact-email person mentions |
 | Delete own chat message; add/remove reaction | Supported |
 | Grouped unread triage and batch context | Chats and channel threads; bounded, paginated coverage |
-| Native quoted chat replies | `replyTeamsBatch`; existing `replyToMessageId` route parameter remains unsupported |
-| Channel thread reads | Through triage inbox/context helpers |
-| Channel replies and read-after-reply | Implemented behind disabled protocol-verification gates |
+| Native quoted chat replies | `replyTeamsBatch` or ordinary sends with exact `replyToMessageId` |
+| Channel roots, exact thread reads/history | Direct restored routes, cursor replay and NDJSON; also triage context |
+| Channel replies | Exact-root replies with durable replay and root-bound verification; live send validation pending |
+| Automatic read-after-reply | Implemented behind a disabled protocol-verification gate |
 | Selected-message read/unread | `setTeamsReadState` supports chat read/unread; channel gates defer |
-| Message search, mentions, attachments, new conversations | Not yet migrated |
+| Message search/open result | Server-backed queries and exact account-bound result context |
+| Attachments and starting channel threads | Unsupported |
 
 Unsupported operations are removed from the advertised OpenAPI schema; saved calls fail explicitly. `getTeamsCapabilities` reports the supported subset. Conversation data can be partial, and retained history is not a guaranteed complete archive. API reads do not send read markers.
+
+## Search and direct message context
+
+`searchTeamsMessages` searches the server across chats and channels, bounded by `limit` (1–200) and `maxPages` (1–10). It deduplicates hits and reports truncation. `resultId` is an account-bound handle valid for 30 minutes or until reload/capacity eviction. Use `openTeamsSearchResult` to get current `selectedMessage`, `chatId` or `channelId`/`parentMessageId` and recent context. Hits with no exact locator report `canOpen=false`. Deleted/unavailable results fail instead of selecting another message. Reads do not mark messages read.
+
+Name-based people search and message search acquire an optional Substrate access token over HTTP from existing renewal credentials; no sign-in window is opened. Version 1 bundles without renewal credentials return `search_token_required`; reconnect with a version 2 bundle. Rotation is returned to Switchboard for encrypted persistence before the operation runs. Search-token failures do not silently fall back to scanning recent messages.
+
+`startTeamsConversation` accepts one exact directory email. With no text, it returns an existing chat or a virtual one-to-one chat with `persisted=false` and sends nothing. The first message persists a new chat; use an idempotency key. The virtual ID binds the account and re-resolved recipient and works after reload. This does not create groups or search external federation.
+
+Ordinary `sendTeamsMessage` accepts `replyToMessageId` from an ordinary read or opened search hit. It reads the exact message directly and rechecks content/version immediately before dispatch. Structured content accepts person mention runs; the exact email is resolved again, and server directory names/MRIs supply escaped markup and mention metadata. These sends, triage replies and edits share mention handling. Existing quoted messages and attachments cannot be edited.
+
+`replyTeamsChannelThread` sends text or structured content beneath an exact
+`channelId`/`parentMessageId`. It supports mentions and automatic URL links,
+rechecks membership, archived/disabled status and root content/version before
+dispatch, and preserves durable acceptance/replay. `verification.threadConfirmed`
+requires matching root metadata in readback; acceptance alone is not proof of
+thread placement or delivery. `replyTeamsBatch` also supports channel targets.
+Channel read markers and automatic read-after-reply remain disabled. The send
+contract is source-verified and fixture-tested; designated live send validation
+remains pending.
+
+`listTeamsChannelThreads` pages channel roots independently of unread state. `readTeamsChannelThread` reads the exact root and composite reply conversation. `pageTeamsChannelThreadHistory` supports backward-link cursors, replay, overlap deduplication and NDJSON. Cursors bind account, channel/root, limit and format. Each thread response includes its root; the initial page can contain that root in addition to `limit` replies. Continue while `hasMore`, including empty filtered root pages. `completeHistory=false` reflects retention/unavailable history.
+
+Live checks passed message/people search, chat result opening, exact message reads, channel roots/continuation and exact thread/NDJSON reads. Mention notifications, first-send chat persistence, quoted sends, channel search-hit opening and deep reply pagination remain separate live checks. No real messages were sent.
 
 ## Unread triage and replies
 
@@ -157,9 +183,9 @@ Run `npm run check:triage -- --silent` for a read-only live check using the save
 
 ## Writes and history
 
-Every write requires an `idempotencyKey`. Use one new key per intended action and reuse it for retries. The durable ledger records intent before the HTTP write; there are no automatic write retries. `accepted_by_api` means server acceptance, not delivery or read confirmation. If `send_uncertain` or `mutation_uncertain` occurs, inspect Teams before further action; retrying with a new key can duplicate the action.
+Every write requires an `idempotencyKey`. Use one new key per intended action and reuse it for retries. The durable ledger records intent before the HTTP write; there are no automatic write retries. `accepted_by_api` means server acceptance. After saving that receipt, the adapter performs at most two exact-message reads within five seconds. `verification.status` is `observed`, `not_observed`, or `unavailable`; observation confirms matching server state, never recipient delivery. Reusing the same key can retry an unfinished readback without another write. Once observed, the saved observation replays; it does not promise the message is still unchanged. If `send_uncertain` or `mutation_uncertain` occurs, inspect Teams before further action; retrying with a new key can duplicate the action.
 
-Edits and deletion require `expectedText`, exact message IDs and ownership. The adapter rechecks text and version immediately before writing, but the private endpoint does not provide an atomic conditional-write guarantee. Edits refuse existing mentions, quoted replies and attachments. Mutation target lookup searches at most six pages of 200 messages. Reaction IDs are the supported common Teams reactions.
+Edits and deletion require `expectedText`, exact message IDs and ownership. The adapter rechecks text and version immediately before writing, but the private endpoint does not provide an atomic conditional-write guarantee. Edits refuse existing mentions, quoted replies and attachments. Mutation target lookup searches at most six pages of 200 messages. Reaction listing uses an exact-message read. Its `available` entries identify adapter presets and IDs observed on the message; `availabilityComplete=false` makes the incomplete catalog explicit. `canSet` means the ID fits the adapter input contract, not that the server grants permission or supports it for this account.
 
 For formatted sends/edits, use `content` instead of `text`, for example:
 
@@ -167,7 +193,18 @@ For formatted sends/edits, use `content` instead of `text`, for example:
 {"content":[{"type":"paragraph","runs":[{"text":"Hello","marks":["bold"]}]}],"idempotencyKey":"example-unique-key"}
 ```
 
-Supported blocks: paragraph, quote, bulletedList and numberedList. Marks: bold, italic, underline, strike and code; links must use HTTP(S). Structured quotes are formatting, not replies to another message. No arbitrary HTML or mentions are accepted. Message HTML returned by reads is untrusted data.
+Bare `http://` and `https://` URLs automatically become HTML links in ordinary
+text and structured text runs, consistently across sends, replies and edits.
+Trailing sentence punctuation and unmatched closing brackets stay outside the
+link; balanced parentheses in URLs are retained. Text without eligible URLs
+keeps the plain-text payload. URLs with credentials, backslashes, malformed
+addresses or more than 2,000 characters remain literal. Explicit links and runs
+marked `code` are preserved. No Markdown or caller HTML is interpreted.
+
+For custom labels or URLs with ambiguous trailing punctuation, use an explicit
+link run such as `{"text":"View the PR","link":"https://github.com/tader/switchboard-plugin-teams/pull/4"}`.
+
+Supported blocks: paragraph, quote, bulletedList and numberedList. Marks: bold, italic, underline, strike and code; links must use HTTP(S). Structured quotes are formatting, not replies to another message. Person mention runs require exact directory emails; arbitrary HTML is refused. Message HTML returned by reads is untrusted data.
 
 History cursors are bound to the connection, conversation, page size and format. They expire after 30 minutes and reset on plugin reload. Reusing a cursor repeats its page. Keep `limit` and `format` unchanged while following `nextCursor`; pages proceed from newer to older history with chronological records inside each page. Capacity is 1,000 cursor records and 100,000 observed IDs per traversal. `format=ndjson` adds an export string to each JSON response.
 
@@ -179,6 +216,24 @@ Switchboard encrypts API access and refresh tokens as connection credentials for
 
 The normal Teams web app performs its authorization-code/PKCE flow. The plugin observes only successful HTTPS token responses for the fixed Teams client and allowed Teams origins, then checks resource, tenant, account and expiry consistency on renewed tokens. JWT decoding is a metadata check; the receiving Microsoft services validate the access tokens. The Teams chat-token exchange confirms the account, and token imports also require a successful conversation-service read. The retained legacy OAuth helper has state, nonce and ID-token signature regression coverage. HTTP calls use fixed Teams service hosts and the auth-service regional chat host; history links cannot change host or conversation. The loopback adapter exposes short-lived single-use invocation capabilities, never Microsoft tokens. Diagnostics omit tokens and message contents.
 
-The earlier Go compatibility probe was live-validated for OAuth, profile, conversation and recent-message reads. This Node implementation has automated fixture coverage for authentication, renewal, portable token export/import, restart recovery, account isolation, request routing, pagination, token redaction, write payloads and duplicate protection. A real portable bundle passed read-only token exchange, account binding and conversation validation on the authentication machine. Production 0.8.0 central-host import, renewal across the SPA expiry boundary, saved-session browser recovery and live writes still need validation. Teams private endpoints can change independently of this plugin. See [API sources](THIRD_PARTY.md).
+The earlier Go compatibility probe was live-validated for OAuth, profile, conversation and recent-message reads. This Node implementation has automated fixture coverage for authentication, renewal, portable token export/import, restart recovery, account isolation, request routing, pagination, token redaction, write payloads and duplicate protection. A real portable bundle passed read-only token exchange, account binding and conversation validation on the authentication machine. Central reconnect upload, renewal across the SPA expiry boundary and saved-session browser recovery still need validation. Authorized chat sends, quotes/mentions, edit/delete and reaction readback passed; recipient notification and new-chat persistence remain unverified. Teams private endpoints can change independently of this plugin. See [API sources](THIRD_PARTY.md).
 
 This implementation and its tests were written by OpenAI Codex at Thomas de Ruiter's request. Independent code review remains outstanding.
+
+### Conversation discovery
+
+`listTeamsChats` combines the CSA snapshot with up to ten regional pages of 100
+conversations within a 30-second scan budget. A partial CSA snapshot triggers
+the same fallback for triage. Existing CSA metadata takes precedence; new chat
+and meeting IDs are deduplicated and unread state remains unknown when native
+horizons/bookmarks are unavailable. `discovery` reports pages, added chats and
+incomplete/error coverage. Team/channel discovery still uses CSA.
+
+For larger inventories, use `pageTeamsChatDiscovery` with `limit` (1–100) and
+follow `nextCursor` while `hasMore=true`, including after an empty page. Keep
+limit unchanged; cursors bind account and expire after 30 minutes or reload.
+Replay returns the same page, overlapping IDs are deduplicated and cycles/caps
+report truncation. Notes, spaces and system streams are excluded. An ended
+regional traversal does not establish a complete archive. Exact selected chats
+outside the automatic scan can resolve through current roster and metadata
+reads; newly discovered chats require a fresh roster check before message writes.

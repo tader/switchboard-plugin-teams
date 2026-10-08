@@ -26,6 +26,9 @@ async function fixture(t, { protocols = triageProtocols, readProtocols = disable
     const url = new URL(value); requests.push({ url, ...options });
     const response = value => new Response(JSON.stringify(value), { status: 200 });
     if (url.pathname.endsWith('/teams/users/me')) return response({ chats: data.chats, teams: data.teams, metadata: data.metadata ?? {} });
+    if (url.pathname.endsWith('/users/ME/conversations')) return response({ conversations: [], _metadata: {} });
+    const roster = url.pathname.match(/\/threads\/([^/]+)\/members$/);
+    if (roster) return new Response(null, { status: 404 });
     const native = url.pathname.match(/\/conversations\/([^/]+)$/);
     if (native) {
       const thread = decodeURIComponent(native[1]), chat = data.chats.find(item => item.id === thread);
@@ -34,6 +37,11 @@ async function fixture(t, { protocols = triageProtocols, readProtocols = disable
         nativeStates.set(thread, { consumptionhorizon: `${normal.originalArrivalTime};1;100`, ...(chat.userConsumptionHorizon?.originalArrivalTime === 0 ? { consumptionHorizonBookmark: '0;1;0' } : {}) });
       }
       return response({ properties: nativeStates.get(thread) });
+    }
+    const exact = url.pathname.match(/\/conversations\/([^/]+)\/messages\/([^/]+)$/);
+    if (exact) {
+      const raw = data.messages[decodeURIComponent(exact[1])]?.find(message => message.id === exact[2]);
+      return raw ? response(raw) : new Response(null, { status: 404 });
     }
     const match = url.pathname.match(/\/conversations\/([^/]+)\/(messages|properties)$/);
     assert.ok(match, 'expected regional request'); const thread = decodeURIComponent(match[1]);
@@ -44,7 +52,7 @@ async function fixture(t, { protocols = triageProtocols, readProtocols = disable
     if (options.method === 'POST') {
       state.sends++; if (state.failSend) throw new Error('connection lost');
       const payload = JSON.parse(options.body), time = fixtureData.boundary + 9000 + state.sends;
-      data.messages[thread].push({ ...rawMessage(time, payload.content, '8:orgid:self'), messagetype: payload.messagetype, clientmessageid: payload.clientmessageid });
+      data.messages[thread].push({ ...rawMessage(time, payload.content, '8:orgid:self'), messagetype: payload.messagetype, clientmessageid: payload.clientmessageid, ...(thread.includes(';messageid=') ? { rootMessageId: thread.split(';messageid=')[1] } : {}) });
       state.afterSend?.(thread); return response({ OriginalArrivalTime: time });
     }
     if (options.method === 'PUT') {
@@ -78,7 +86,7 @@ test('grouped inbox prioritizes mentions/direct chats, groups channel replies an
   assert.equal(result.items[1].unread[0].authorId, '8:orgid:peer');
   assert.equal(result.items[3].parentMessageId, root);
   assert.equal(result.items[3].unread.length, 2);
-  assert.equal(result.items[3].canReply, false);
+  assert.equal(result.items[3].canReply, true);
   assert.equal(result.items[0].context.length, 0, 'unread messages are not duplicated in context');
   assert.equal(result.completeAccount, false); assert.equal(result.mayMarkRead, false);
   assert.equal(f.state.marks, 0); assert.equal(f.state.sends, 0);
@@ -203,12 +211,12 @@ test('unhandled sibling channel thread defers marking; later reply makes advance
   assert.ok(decodeURIComponent(posts[0].url.pathname).includes(`;messageid=${root}/messages`));
 });
 
-test('partial windows never mark read; production channel replies fail without dispatch', async t => {
+test('partial windows never mark read; explicitly disabled channel replies fail without dispatch', async t => {
   const f = await fixture(t, { protocols: enabled, readProtocols: disabledReads });
   f.links.set(f.data.chats[0].id, `${f.api.credentials.messageOrigin}/v1/users/ME/conversations/${encodeURIComponent(f.data.chats[0].id)}/messages?older=1`);
   const result = await f.triage.replies({ replies: [reply((await f.triage.inbox()).items[0])] });
   assert.equal(result.items[0].read.reason, 'incomplete_unread_window'); assert.equal(f.state.marks, 0);
-  const production = await fixture(t), group = (await production.triage.inbox()).items.find(group => group.kind === 'channel');
+  const production = await fixture(t, { protocols: { ...triageProtocols, channelReplies: false } }), group = (await production.triage.inbox()).items.find(group => group.kind === 'channel');
   assert.equal((await production.triage.replies({ replies: [reply(group)] })).items[0].send.error.code, 'api_operation_unsupported');
   assert.equal(production.state.sends, 0);
 });
@@ -238,8 +246,11 @@ test('ledger failure after send leaves an uncertain intent; read-stage persisten
   assert.equal(result.items[0].send.status, 'uncertain'); assert.equal(f.state.sends, 1);
   const restarted = new TeamsTriage(f.api, new SendLedger(path.dirname(f.ledger.file)));
   assert.equal((await restarted.replies(input)).items[0].send.status, 'uncertain'); assert.equal(f.state.sends, 1);
-  const other = await fixture(t, { protocols: enabled }), otherGroup = (await other.triage.inbox()).items[0], otherWrite = other.ledger.write.bind(other.ledger); let otherWrites = 0;
-  other.ledger.write = records => ++otherWrites === 3 ? Promise.reject(new Error('disk full')) : otherWrite(records);
+  const other = await fixture(t, { protocols: enabled }), otherGroup = (await other.triage.inbox()).items[0], otherWrite = other.ledger.write.bind(other.ledger); let failedReadPersistence = false;
+  other.ledger.write = records => {
+    if (!failedReadPersistence && Object.values(records).some(record => record.triageRead)) { failedReadPersistence = true; return Promise.reject(new Error('disk full')); }
+    return otherWrite(records);
+  };
   const otherInput = { replies: [reply(otherGroup)] }, accepted = await other.triage.replies(otherInput);
   assert.equal(accepted.items[0].send.status, 'accepted_by_api'); assert.equal(accepted.items[0].read.reason, 'read_update_persistence_failed');
   const recovery = new TeamsTriage(other.api, new SendLedger(path.dirname(other.ledger.file)), { protocols: enabled, readProtocols: disabledReads });

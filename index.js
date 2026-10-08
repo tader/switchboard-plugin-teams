@@ -7,7 +7,7 @@ import { TeamsAPI, capabilities as apiCapabilities, unsupported } from './lib/te
 import { TeamsTriage, triageCapabilities } from './lib/triage.js';
 import { SendLedger } from './lib/ledger.js';
 import { AdapterError } from './lib/errors.js';
-import { messageText, messageId, recipientEmail, reactionInput } from './lib/input.js';
+import { messageText, messageId, recipientEmail, reactionInput, peopleQuery, messageQuery } from './lib/input.js';
 import { richContent } from './lib/content.js';
 import { openapi } from './lib/api-openapi.js';
 import { validateTokenBundle } from './lib/token-bundle.js';
@@ -46,7 +46,7 @@ async function body(request, allowed) {
 }
 function contentInput(input) {
   if ((input.text === undefined) === (input.content === undefined)) throw new AdapterError('invalid_body', 'Provide exactly one of text or content.', 400);
-  if (input.replyToMessageId !== undefined) unsupported();
+  if (input.replyToMessageId !== undefined) input.replyToMessageId = messageId(input.replyToMessageId);
   return { ...input, ...(input.content === undefined ? { text: messageText(input.text) } : { content: richContent(input.content) }) };
 }
 
@@ -102,8 +102,30 @@ export async function createAdapter(ctx, {
       const messages = url.pathname.match(/^\/chats\/([^/]+)\/messages$/);
       const mutation = url.pathname.match(/^\/chats\/([^/]+)\/messages\/([^/]+)(\/reactions)?$/);
       const history = url.pathname.match(/^\/(chats|channels)\/([^/]+)\/history$/);
+      const threads = url.pathname.match(/^\/channels\/([^/]+)\/threads(?:\/([^/]+)\/(messages|history))?$/);
       let operation;
-      if (request.method === 'GET' && ['/chats', '/unread/chats'].includes(url.pathname)) {
+      if (request.method === 'GET' && url.pathname === '/search/messages') {
+        const query = messageQuery(url.searchParams.get('query')), limit = integer(url, 'limit', 50, 1, 200), maxPages = integer(url, 'maxPages', 3, 1, 10);
+        operation = () => api.search(query, limit, maxPages);
+      } else if (request.method === 'POST' && url.pathname === '/search/messages/open') {
+        const input = await body(request, ['resultId']);
+        if (typeof input.resultId !== 'string' || !/^[a-f0-9-]{36}$/.test(input.resultId)) throw new AdapterError('invalid_search_result', 'Use a returned search resultId.', 400);
+        operation = () => api.openSearchResult(input.resultId);
+      } else if (request.method === 'POST' && threads?.[2] && threads[3] === 'messages') {
+        const id = decodeURIComponent(threads[1]), parentMessageId = messageId(decodeURIComponent(threads[2]));
+        const input = contentInput(await body(request, ['text', 'content', 'idempotencyKey']));
+        operation = () => ledger.run(input.idempotencyKey, ['api-channel-reply', api.account(), id, parentMessageId, input],
+          () => api.prepareChannelReply(id, parentMessageId, input), prepared => { checkCancelled(); return api.send(prepared, controller.signal); },
+          'send_uncertain', (result, context) => api.confirm(result, context, controller.signal));
+      } else if (request.method === 'GET' && threads) {
+        const id = decodeURIComponent(threads[1]), parentMessageId = threads[2] ? messageId(decodeURIComponent(threads[2])) : null;
+        const limit = integer(url, 'limit', 100, 1, 200), format = url.searchParams.get('format') ?? 'json', cursor = url.searchParams.get('cursor') ?? undefined;
+        if (!['json', 'ndjson'].includes(format) || cursor && !/^[a-f0-9-]{36}$/.test(cursor)) throw new AdapterError('invalid_query', 'Use a returned cursor and json or ndjson format.', 400);
+        operation = threads[3] === 'messages' ? () => api.threadMessages(id, parentMessageId, limit) :
+          () => api.history(id, { limit, format, cursor, kind: 'channel', parentMessageId, rootsOnly: !parentMessageId });
+      } else if (request.method === 'GET' && url.pathname === '/chats/discovery') {
+        const limit = integer(url, 'limit', 100, 1, 100), cursor = url.searchParams.get('cursor') ?? undefined; operation = () => api.discoverChats({ limit, cursor, signal: controller.signal });
+      } else if (request.method === 'GET' && ['/chats', '/unread/chats'].includes(url.pathname)) {
         const unread = url.pathname === '/unread/chats' || boolean(url, 'unreadOnly'); operation = () => api.chats(unread);
       } else if (request.method === 'GET' && url.pathname === '/channels') operation = () => api.channels();
       else if (request.method === 'GET' && url.pathname === '/triage/inbox') {
@@ -125,10 +147,10 @@ export async function createAdapter(ctx, {
         if (!['json', 'ndjson'].includes(format) || cursor && !/^[a-f0-9-]{36}$/.test(cursor)) throw new AdapterError('invalid_query', 'Use a returned cursor and json or ndjson format.', 400);
         operation = () => api.history(id, { limit, format, cursor, kind: history[1] === 'chats' ? 'chat' : 'channel' });
       } else if (request.method === 'GET' && url.pathname === '/people') {
-        const email = recipientEmail(url.searchParams.get('query')); operation = () => api.people(email);
+        const query = peopleQuery(url.searchParams.get('query')); operation = () => api.people(query);
       } else if (request.method === 'POST' && messages) {
         const id = decodeURIComponent(messages[1]), input = contentInput(await body(request, ['text', 'content', 'replyToMessageId', 'idempotencyKey']));
-        operation = () => ledger.run(input.idempotencyKey, ['api-send', id, input], () => api.prepareSend(id, input), prepared => { checkCancelled(); return api.send(prepared); }, 'send_uncertain');
+        operation = () => ledger.run(input.idempotencyKey, ['api-send', id, input], () => api.prepareSend(id, input), prepared => { checkCancelled(); return api.send(prepared); }, 'send_uncertain', (result, context) => api.confirm(result, context, controller.signal));
       } else if (request.method === 'POST' && url.pathname === '/conversations') {
         const input = await body(request, ['email', 'text', 'idempotencyKey']); input.email = recipientEmail(input.email);
         if (input.text === undefined) {
@@ -139,7 +161,7 @@ export async function createAdapter(ctx, {
           operation = () => ledger.run(input.idempotencyKey, ['api-person-send', input], async () => {
             const conversation = await api.existingConversation(input.email);
             return { ...await api.prepareSend(conversation.chatId, input), conversation };
-          }, async prepared => { checkCancelled(); return { ...prepared.conversation, ...await api.send(prepared), messageSent: true }; }, 'send_uncertain');
+          }, async prepared => { checkCancelled(); return { ...prepared.conversation, ...await api.send(prepared), messageSent: true }; }, 'send_uncertain', (result, context) => api.confirm(result, context, controller.signal));
         }
       } else if (mutation) {
         const id = decodeURIComponent(mutation[1]), mid = messageId(decodeURIComponent(mutation[2]));
@@ -150,7 +172,7 @@ export async function createAdapter(ctx, {
           let input = await body(request, kind === 'reaction' ? ['reaction', 'selected', 'idempotencyKey'] : kind === 'edit' ? ['text', 'content', 'expectedText', 'idempotencyKey'] : ['expectedText', 'idempotencyKey']);
           if (kind === 'reaction') input = { ...input, ...reactionInput(input.reaction, input.selected) };
           else { input.expectedText = messageText(input.expectedText, 'expectedText', true); if (kind === 'edit') input = contentInput(input); }
-          operation = () => ledger.mutate(input.idempotencyKey, ['api', kind, id, mid], input, () => api.prepareMutation(id, mid, kind, input), prepared => { checkCancelled(); return api.mutate(prepared); });
+          operation = () => ledger.mutate(input.idempotencyKey, ['api', kind, id, mid], input, () => api.prepareMutation(id, mid, kind, input), prepared => { checkCancelled(); return api.mutate(prepared); }, (result, context) => api.confirm(result, context, controller.signal));
         }
       } else if (url.pathname.startsWith('/search/') || /\/(threads|unread)(\/|$)/.test(url.pathname)) unsupported();
       else throw new AdapterError('not_found', 'Unknown Teams operation.', 404);
@@ -199,7 +221,10 @@ export async function createAdapter(ctx, {
       let authorizationError;
       if (!control) {
         const before = session.credentials;
-        try { await session.ensure(force); }
+        try {
+          await session.ensure(force);
+          if (request.url.pathname === '/search/messages' || request.url.pathname === '/people' && !request.url.searchParams.get('query')?.includes('@')) await session.ensureSearch();
+        }
         catch (error) {
           // Returning the rotated credentials lets Switchboard encrypt them before
           // our local adapter reports the failure. No data/write operation executes.

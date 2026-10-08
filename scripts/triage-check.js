@@ -31,7 +31,7 @@ try {
     if (errors.length) console.log('Context error codes:', errors.map(item => item.error.code).join(', '));
   }
   console.log('No messages sent or read markers written. No tokens or message contents printed or exported; the shared session is saved locally for reuse.');
-  console.log('Native chat quotes are source-verified; explicit chat read/unread is live-verified; channel writes and automatic read-after-reply still require designated live validation.');
+  console.log('Native chat quotes are source-verified; explicit chat read/unread is live-verified; exact-root channel replies are source-verified with live send validation pending; channel read state and automatic read-after-reply remain disabled.');
 } catch (error) {
   console.error(controller.signal.aborted ? 'Triage check cancelled.' : error instanceof AdapterError ? `${error.code}: ${error.message}` : 'Triage check failed.');
   process.exitCode = controller.signal.aborted ? 130 : 1;
