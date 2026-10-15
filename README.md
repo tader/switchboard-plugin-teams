@@ -15,7 +15,7 @@ npm test
 npm run install:local -- ~/switchboard/.data
 ```
 
-The installer stages code outside the plugin watcher, replaces `.data/plugins/teams-web`, and saves the previous code under `.data/plugin-backups/`. It does not change connection records, encrypted credentials, or `.data/plugin-data/teams-web`. Reload or restart Switchboard after installing. This branch has not been published as a GitHub release.
+The installer stages code outside the plugin watcher, replaces `.data/plugins/teams-web`, and saves the previous code under `.data/plugin-backups/`. It does not change connection records, encrypted credentials, or `.data/plugin-data/teams-web`. Reload or restart Switchboard after installing. Published versions are available on the repository’s GitHub Releases page.
 
 In Switchboard, reconnect the existing Teams connection once (or add a new Teams connection). Choose Microsoft sign-in through local Chrome, or Import Teams tokens for a browser-free host (see below). For browser sign-in, enter your work email as the optional Microsoft work email hint. Complete sign-in in the dedicated browser window; it closes automatically when authentication finishes. `LOCAL-BROWSER` is only a placeholder in the connection dialog.
 
@@ -237,3 +237,9 @@ report truncation. Notes, spaces and system streams are excluded. An ended
 regional traversal does not establish a complete archive. Exact selected chats
 outside the automatic scan can resolve through current roster and metadata
 reads; newly discovered chats require a fresh roster check before message writes.
+
+## Releases
+
+Releases are managed by [release-please](https://github.com/googleapis/release-please). Use Conventional Commits (`fix:`, `feat:`, and `feat!:` for breaking changes). Pushes to `main` update a release pull request; merging it publishes a GitHub release and `v` tag. The package and plugin manifest versions are updated together. The workflow can also be run manually. Repository Actions settings must allow GitHub Actions to create pull requests.
+
+In Switchboard, install the repository root. The default tracks the latest stable release; choose a release to pin it, or a development branch to try unpublished changes.

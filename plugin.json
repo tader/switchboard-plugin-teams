@@ -1,7 +1,7 @@
 {
   "id": "teams-web",
   "name": "Teams",
-  "version": "0.10.0",
+  "version": "0.11.0",
   "main": "index.js",
   "description": "Read and manage Teams chats and selected-message read state through direct APIs, using local browser sign-in or imported tokens.",
   "icon": "icon.svg",
