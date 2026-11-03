@@ -1,3 +1,4 @@
+import { createMessaging } from './lib/messaging.js';
 import http from 'node:http';
 import fs from 'node:fs/promises';
 import path from 'node:path';
@@ -15,6 +16,9 @@ import { validateTokenBundle } from './lib/token-bundle.js';
 const capabilities = { ...apiCapabilities, supported: [...apiCapabilities.supported, 'triage_inbox', 'batch_reply_contexts', 'batch_chat_replies', 'quoted_chat_replies', 'channel_thread_reads', 'chat_mark_read', 'chat_mark_unread'],
   unsupported: apiCapabilities.unsupported.filter(name => !['quoted_replies', 'mark_unread'].includes(name)), triage: triageCapabilities };
 
+const accessField={key:'access',label:'Access',type:'select',default:'read',options:[{value:'read',label:'Read only'},{value:'write',label:'Read and write'}]};
+function connectionAccess(config,connection){const value=config.access??connection?.config?.access??'read';if(!['read','write'].includes(value))throw new AdapterError('invalid_access','Choose read or write access.',400);return value;}
+function conversationKind(id){try{const value=JSON.parse(Buffer.from(id,'base64url'));if(!['chat','channel'].includes(value.kind))throw Error();return value.kind;}catch{throw new AdapterError('invalid_conversation','Use a returned conversation id.',400);}}
 const profilePath = (dataDir, profile) => {
   if (typeof profile !== 'string' || !/^[a-f0-9]{8}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{12}$/.test(profile)) throw new AdapterError('invalid_profile', 'Invalid connection profile.', 400);
   return path.join(dataDir, 'profiles', profile);
@@ -67,6 +71,17 @@ export async function createAdapter(ctx, {
     }
     return sessions.get(profile);
   };
+  const describeConversation=async(api,id)=>{
+    const kind=conversationKind(id),raw=await api.resolve(id,kind);
+    let type='channel';
+    if(kind==='chat'){
+      if(typeof raw.isOneOnOne==='boolean')type=raw.isOneOnOne?'direct':'group';
+      else {const roster=await api.request('messages',`threads/${encodeURIComponent(raw.id)}/members`);
+        if(!Array.isArray(roster?.members)||!roster.members.some(m=>m.id===api.selfMri()))throw new AdapterError('conversation_unavailable','Current membership was not verified.',404);
+        type=new Set(roster.members.map(m=>m.id)).size<=2?'direct':'group';}
+    }
+    return {id,title:raw.title||raw.displayName||raw.threadProperties?.topic||'Teams',kind:type,unreadCount:Number.isSafeInteger(raw.unreadCount)?raw.unreadCount:null,time:raw.lastMessage?.originalArrivalTime??null};
+  };
   const prune = setInterval(() => {
     const now = Date.now();
     for (const [token, value] of invocations) if (value.expires < now) invocations.delete(token);
@@ -99,12 +114,24 @@ export async function createAdapter(ctx, {
         if (pending.has(invocation.profile)) throw new AdapterError('signin_pending', 'Complete the pending connection sign-in.', 503);
         return respond(response, 200, await session.login());
       }
+      const contractConversation = url.pathname.match(/^\/contract\/conversations\/([^/]+)$/);
+      const contractMessage = url.pathname.match(/^\/contract\/conversations\/([^/]+)\/messages\/([^/]+)$/);
       const messages = url.pathname.match(/^\/chats\/([^/]+)\/messages$/);
       const mutation = url.pathname.match(/^\/chats\/([^/]+)\/messages\/([^/]+)(\/reactions)?$/);
       const history = url.pathname.match(/^\/(chats|channels)\/([^/]+)\/history$/);
       const threads = url.pathname.match(/^\/channels\/([^/]+)\/threads(?:\/([^/]+)\/(messages|history))?$/);
       let operation;
-      if (request.method === 'GET' && url.pathname === '/search/messages') {
+      if (request.method==='GET' && contractConversation) {
+        const id=decodeURIComponent(contractConversation[1]);
+        operation=()=>describeConversation(api,id);
+      } else if(request.method==='GET' && contractMessage){
+        const id=decodeURIComponent(contractMessage[1]),mid=messageId(decodeURIComponent(contractMessage[2]));
+        const parent=url.searchParams.get('threadId');
+        operation=async()=>{const kind=conversationKind(id);const source=parent?await api.threadSource(id,messageId(parent)):await api.resolve(id,kind);const thread=parent?source.threadId:source.id;
+          const raw=await api.request('messages',`${api.messagePath(thread)}/${encodeURIComponent(mid)}`);
+          if(!raw||String(raw.id)!==mid)throw new AdapterError('message_unavailable','Exact message was not returned.',404);
+          return {raw,account:api.selfMri()};};
+      } else if (request.method === 'GET' && url.pathname === '/search/messages') {
         const query = messageQuery(url.searchParams.get('query')), limit = integer(url, 'limit', 50, 1, 200), maxPages = integer(url, 'maxPages', 3, 1, 10);
         operation = () => api.search(query, limit, maxPages);
       } else if (request.method === 'POST' && url.pathname === '/search/messages/open') {
@@ -190,8 +217,9 @@ export async function createAdapter(ctx, {
       });
       respond(response, 200, result);
     } catch (error) {
+      if(activeSession&&invocation.pathname!=='/login'&&error.reauthenticationRequired)activeSession.authError=activeSession.credentials?.authMode==='tokens'?importRequired():new AdapterError('signin_required','Sign in again.',503);
       if (activeSession?.credentials?.authMode === 'tokens' && error.code === 'api_unauthorized') { error = importRequired(); activeSession.authError = error; }
-      respond(response, error.status ?? 500, { error: { code: error instanceof AdapterError ? error.code : 'adapter_error', message: error instanceof AdapterError ? error.message : 'Local Teams API adapter failed.' } });
+      respond(response, error.status ?? 500, { error: { code: error instanceof AdapterError ? error.code : 'adapter_error', message: error instanceof AdapterError ? error.message : 'Local Teams API adapter failed.', ...(error.reauthenticationRequired?{reauthenticationRequired:true}:{}), ...(error.retryAfterMs?{retryAfterMs:error.retryAfterMs}:{}) } });
     }
   });
   server.requestTimeout = 15_000;
@@ -216,6 +244,7 @@ export async function createAdapter(ctx, {
   const sharedAuth = {
     async authorize(request, connection, { force = false } = {}) {
       const { session } = get(connection.credentials.profile); session.adopt(connection.credentials);
+      if(connection.config?.access==='read' && !['GET','HEAD'].includes(request.method) && !['/login','/triage/contexts','/search/messages/open'].includes(request.url.pathname))throw new AdapterError('permission_denied','This connection is read-only.',403);
       const control = ['/status', '/diagnostics', '/capabilities', '/login'].includes(request.url.pathname);
       if (!control && pending.has(session.profile)) throw new AdapterError('signin_pending', 'Complete the pending connection sign-in.', 503);
       let authorizationError;
@@ -248,10 +277,11 @@ export async function createAdapter(ctx, {
   };
   return {
     services: [{ id: 'teams-web', name: 'Teams', icon: 'icon.svg', description: 'Teams APIs with local browser sign-in or imported tokens.',
+      contracts: createMessaging(ctx.dataDir),
       baseUrl: 'http://teams.localhost', allowedHosts: ['teams.localhost', new URL(origin).host], openapi,
       authMethods: [{ id: 'browser', name: 'Microsoft sign-in through local Chrome',
         description: 'Sign in once in a dedicated local Chrome profile. Tokens are stored encrypted by Switchboard. Chrome closes after authentication; API calls renew tokens automatically when possible.',
-        fields: [{ key: 'label', label: 'Account label', required: true }, { key: 'loginHint', label: 'Microsoft work email', description: 'Optional account hint for sign-in.' }],
+        fields: [accessField, { key: 'label', label: 'Account label', required: true }, { key: 'loginHint', label: 'Microsoft work email', description: 'Optional account hint for sign-in.' }],
         async connect({ config, connection }) {
           const profile = connection?.credentials?.profile ?? randomUUID();
           const previousFlow = pending.get(profile);
@@ -260,7 +290,7 @@ export async function createAdapter(ctx, {
           if (connection?.credentials) session.adopt({ ...connection.credentials, authMode: 'browser' });
           const label = String(config.label || connection?.account?.label || 'Teams').trim().slice(0, 100);
           const loginHint = config.loginHint ? recipientEmail(config.loginHint) : undefined;
-          const expires = Date.now() + 15 * 60_000, attempt = randomUUID(); pending.set(profile, { label, expires, entry, attempt });
+          const expires = Date.now() + 15 * 60_000, attempt = randomUUID(); pending.set(profile, { label, expires, entry, attempt, access:connectionAccess(config,connection) });
           try {
             // Finish any renewal on the same browser profile before launching sign-in.
             await sessions.get(profile)?.session.queue;
@@ -276,13 +306,13 @@ export async function createAdapter(ctx, {
           if (!session.status().ready) return { wait: true };
           pending.delete(flow.profile);
           await replaceEntry(flow.profile, active.entry);
-          return { credentials: session.credentials, config: {}, account: { id: flow.profile, label: active.label } };
+          return { credentials: session.credentials, config: {access:active.access}, account: { id: flow.profile, label: active.label } };
         },
         ...sharedAuth,
       }, {
         id: 'tokens', name: 'Import Teams tokens',
         description: 'Paste a bundle from auth:export. Refresh-capable bundles renew automatically over HTTP. Re-import when Microsoft requires fresh authentication. No browser is used here.',
-        fields: [{ key: 'label', label: 'Account label', required: true }, { key: 'tokenBundle', label: 'Teams token bundle (JSON)', type: 'secret', required: true }],
+        fields: [accessField, { key: 'label', label: 'Account label', required: true }, { key: 'tokenBundle', label: 'Teams token bundle (JSON)', type: 'secret', required: true }],
         async connect({ config, connection }) {
           const profile = connection?.credentials?.profile ?? randomUUID();
           const entry = entryFor(profile);
@@ -297,7 +327,7 @@ export async function createAdapter(ctx, {
             if (!readyCredentials(credentials)) throw importRequired();
             if (disposed) throw new AdapterError('disposed', 'Plugin has been unloaded.', 503);
             await replaceEntry(profile, entry);
-            return { credentials, config: {}, account: { id: profile, label: String(config.label || connection?.account?.label || 'Teams').trim().slice(0, 100) } };
+            return { credentials, config: {access:connectionAccess(config,connection)}, account: { id: profile, label: String(config.label || connection?.account?.label || 'Teams').trim().slice(0, 100) } };
           } catch (error) { await entry.session.close(); throw error; }
         },
         ...sharedAuth,
