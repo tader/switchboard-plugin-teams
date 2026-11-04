@@ -1,5 +1,13 @@
 # Changelog
 
+## [0.13.1](https://github.com/tader/switchboard-plugin-teams/compare/v0.13.0...v0.13.1) (2026-11-04)
+
+
+### Bug Fixes
+
+* shared Microsoft authentication and bounded Messaging discovery ([#9](https://github.com/tader/switchboard-plugin-teams/issues/9)) ([24af443](https://github.com/tader/switchboard-plugin-teams/commit/24af44345e8a9e32521396890633ab2324b0bd73))
+* support the authenticated Teams self conversation ([#11](https://github.com/tader/switchboard-plugin-teams/issues/11)) ([537983c](https://github.com/tader/switchboard-plugin-teams/commit/537983cae70ee003765bd7a4f0c335f90adaa736))
+
 ## [0.13.0](https://github.com/tader/switchboard-plugin-teams/compare/v0.12.0...v0.13.0) (2026-11-04)
 
 
