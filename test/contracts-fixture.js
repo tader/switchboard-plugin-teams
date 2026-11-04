@@ -15,6 +15,7 @@ export async function fixture(t, methodId = "tokens") {
   const directory = await fs.mkdtemp(path.join(os.tmpdir(), "teams-contract-"));
   const requests = [],
     posts = [];
+  let channelCount = 1;
   let expired = false,
     sendFailure = false,
     forbidden = false,
@@ -55,7 +56,7 @@ export async function fixture(t, methodId = "tokens") {
         chats: [{ id: thread, title: "Chat", isOneOnOne: true, members: [] }],
         teams: [
           {
-            channels: [{ id: channel, displayName: "Channel", isMember: true }],
+            channels: Array.from({length:channelCount},(_,n)=>({id:n?channel+"-"+n:channel,displayName:"Channel "+n,isMember:true})),
           },
         ],
       });
@@ -196,5 +197,6 @@ export async function fixture(t, methodId = "tokens") {
     failSend: (v) => (sendFailure = v),
     deny: (v) => (forbidden = v),
     rate: (v) => (rate = v),
+    setChannelCount: n => {channelCount=n;},
   };
 }

@@ -195,3 +195,26 @@ test("shared authentication requires its own credential mode and existing profil
  assert.deepEqual(available({...f.connection,credentials:{...f.connection.credentials,identity:null}}),[]);
  assert.deepEqual(available({...f.connection,methodId:"unknown"}),[]);
 });
+
+test("mixed chat/channel discovery stays bounded and pages every channel exactly once",async t=>{
+ const f=await fixture(t,"authentication-source");f.setChannelCount(130);
+ let cursor;const ids=[];let pages=0;
+ do{const page=await call(f,"messaging.conversations.list",{limit:20,...(cursor?{cursor}:{})});
+ assert.ok(page.items.length<=20);ids.push(...page.items.map(c=>c.id));cursor=page.nextCursor;pages++;assert.ok(pages<10);
+ }while(cursor);
+ assert.equal(ids.length,131);assert.equal(new Set(ids).size,131);assert.ok(ids.includes(chatId));
+});
+test("discovery cursors remain bound to query/account and reject changed channel membership",async t=>{
+ const f=await fixture(t,"authentication-source");f.setChannelCount(5);
+ const page=await call(f,"messaging.conversations.list",{limit:2});
+ await assert.rejects(call(f,"messaging.conversations.list",{limit:3,cursor:page.nextCursor}),{code:"invalid_cursor"});
+ const other={...f.connection,id:"other-account"};
+ await assert.rejects(call(f,"messaging.conversations.list",{limit:2,cursor:page.nextCursor},f.invocation(other)),{code:"invalid_cursor"});
+ // The provider directory cache may last 30s; use another adapter with the same
+ // signing key to exercise a refreshed snapshot without sleeping in this test.
+ const {createMessaging}=await import("../lib/messaging.js");
+ const contract=createMessaging(f.directory);
+ const ctx=f.invocation();const original=ctx.request;
+ ctx.request=async req=>req.url==="/channels"?Response.json({items:[]}):original(req);
+ await assert.rejects(contract.operations["messaging.conversations.list"].invoke({limit:2,cursor:page.nextCursor},ctx),{code:"invalid_cursor"});
+});

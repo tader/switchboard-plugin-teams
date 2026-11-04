@@ -50,3 +50,8 @@ The common Messaging contract supports the current Microsoft Authentication sour
 method as well as existing browser/token connections. Shared-source credentials
 retain their Microsoft session mode, profile and identity. Discovery and requests
 use the same access setting: read-only connections never advertise or permit sends.
+
+Conversation discovery shares each page between regional chats and joined channels,
+never exceeding the requested limit. Continuations bind the account, connection and
+page size; a changed channel membership snapshot requires restarting discovery.
+Provider chat cursors retain a stable native page size across mixed pages.
