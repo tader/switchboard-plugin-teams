@@ -54,6 +54,17 @@ const base = "http://127.0.0.1:" + server.address().port,
   user = createUser("fixture", "admin"),
   id = "teams-fixture",
   ro = "teams-readonly";
+// Exercise the real credential-consumer boundary too: cached shared sessions
+// still require a selected, owned authentication provider in the core catalogue.
+plugins.services.set("fixture-authentication", {
+ pluginId:"fixture-authentication",
+ service:{id:"fixture-authentication",name:"Fixture authentication",authMethods:[{
+  id:"fixture",name:"Fixture",fields:[],authorize:async()=>{},
+  credentialProvider:{format:"microsoft/web-session/v1",provide:async()=>{throw Error("Unexpected export: fixture uses cached session");}},
+ }]},
+});
+database.run("INSERT INTO connections(id,user_id,service_id,method_id,name,config_enc,credentials_enc,status,created_at,updated_at) VALUES(?,?,?,?,?,?,?,?,?,?)",
+ "source-fixture",user.id,"fixture-authentication","fixture","source-fixture",encrypt({}),encrypt({}),"ok",Date.now(),Date.now());
 for (const [key, access] of [
   [id, "write"],
   [ro, "read"],
@@ -65,7 +76,7 @@ for (const [key, access] of [
     "teams-web",
     f.connection.methodId,
     key,
-    encrypt({ access }),
+    encrypt({ access, authenticationSource: "source-fixture" }),
     encrypt(f.connection.credentials),
     "ok",
     Date.now(),
@@ -115,7 +126,7 @@ try {
     403,
   );
   const list = await (await call("messaging.conversations.list", {})).json();
-  assert.equal(list.items.length, 2);
+  assert.equal(list.items?.length, 2, JSON.stringify(list));
   assert.equal(list.coverage.complete, false);
   const history = await (
     await call("messaging.messages.list", { conversationId: chatId })
