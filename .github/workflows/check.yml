@@ -1,0 +1,44 @@
+name: Check Teams plugin
+on:
+  push:
+  pull_request:
+  workflow_dispatch:
+    inputs:
+      expected_sha:
+        description: Expected release PR head commit
+        required: false
+permissions:
+  contents: read
+jobs:
+  check:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1
+        with:
+          node-version: "24"
+          package-manager-cache: false
+      - name: Check dispatched revision
+        if: github.event_name == 'workflow_dispatch' && inputs.expected_sha != ''
+        env:
+          EXPECTED_SHA: ${{ inputs.expected_sha }}
+        run: test "$(git rev-parse HEAD)" = "$EXPECTED_SHA"
+      - run: npm ci
+      - run: npm test
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          repository: tader/switchboard
+          ref: c832b1be994169f7dbabc84f836107e51ea18318
+          path: switchboard-contract-core
+      - run: npm ci --prefix switchboard-contract-core
+      - run: npm run integration:contracts
+        env:
+          SWITCHBOARD_ROOT: ${{ github.workspace }}/switchboard-contract-core
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          repository: tader/switchboard-plugin-microsoft
+          ref: 8b4e36ba8afa5751eee3b07fc074d8b26ac21ff2
+          path: microsoft-auth-dependency
+      - run: npm run integration:microsoft
+        env:
+          MICROSOFT_AUTH_ROOT: ${{ github.workspace }}/microsoft-auth-dependency

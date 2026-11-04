@@ -1,3 +1,17 @@
+# Teams in the Microsoft plugin family
+
+Install `plugins/teams` from `tader/switchboard-plugin-microsoft`. The plugin and service ID remain `teams-web`, so existing connections, API routes, saved calls, profile directories and durable send/read-state ledgers continue to work. The complete current API adapter and convenience methods are retained. Stable releases use `teams-v<version>` tags to match the `plugins/teams` installation folder; the plugin ID remains `teams-web`.
+
+For one Microsoft sign-in, first connect **Microsoft Authentication** (Teams web sign-in), then connect Teams using **Use Microsoft Authentication** and select that source. Select the same source for Outlook, Graph, OneDrive, To Do and Excel. For a server, explicitly share authentication from the laptop to the direct peer and select the received source on a local Teams connection. Tokens renew by HTTP with cached credentials while the laptop is offline. A fresh provider-required sign-in happens on the authentication source device.
+
+Teams setup offers **Use Microsoft Authentication**, with the same authentication connection selector as the other Microsoft products. A Switchboard version supporting authentication sources and hidden legacy methods is required. Existing **Microsoft sign-in through local Chrome** and **Import Teams tokens** connections continue to work, but these legacy choices are hidden from setup. Reconnect an existing connection and select **Use Microsoft Authentication** to migrate it in place. Outlook-issued web credentials cannot authorize Teams chat even when token issuance succeeds; reconnect the source using its default Teams sign-in. All data operations use APIs. Browser automation is used for authentication only.
+
+To diagnose authentication without reading Teams content, call `getTeamsStatus` with `renew=true`. This renews tokens and returns status only. If a consumer has an expired session, it first obtains the authentication source’s current cached session; another browser sign-in is requested only if that session is also rejected.
+
+For large accounts that exceed the default 8 MiB API response limit, set **Maximum API response size (MiB)** (`maxResponseMiB`) in the Teams plugin settings. Use a whole number from 1 to 256; invalid values use 8. Increase it only as needed: buffering and parsing larger responses uses more memory, especially with concurrent requests.
+
+Legacy standalone documentation and scripts follow for compatibility:
+
 # Teams API plugin for Switchboard
 
 Version 0.11.0 supports direct Teams private API calls with local browser sign-in or imported tokens. Chrome or Edge captures renewal credentials during normal Teams sign-in, then closes. Access tokens renew through HTTP using the existing Teams public client ID, without a client secret or browser. A central Switchboard can import tokens from another machine and run without Chrome or Edge. No Go, Electron, Microsoft Graph registration, npm dependencies, or persistent Teams tab is required. Node 24+ is required.
@@ -5,6 +19,11 @@ Version 0.11.0 supports direct Teams private API calls with local browser sign-i
 For unread triage, prefer `getTeamsTriageInbox`, `getTeamsReplyContexts` and `replyTeamsBatch`. The inbox groups chats and channel threads; native quoted chat replies have durable duplicate protection. `setTeamsReadState` marks chat messages read or unread at an exact selected boundary. **Exact-root channel replies are supported; channel read state and automatic read-after-reply remain disabled.** See [triage protocol status](docs/triage-protocol.md).
 
 The service ID remains `teams-web`, and the existing browser authentication method remains `browser`, so existing Switchboard connections can be reconnected in place. The previous DOM adapter is retained in `legacy-index.js` for regression testing; production does not invoke it.
+
+## Shared Messaging contract
+
+See [Messaging v1](docs/messaging-contract.md) for common operations, access settings,
+activity-controlled reconciliation, authentication pauses and integration tests.
 
 ## Install locally
 
@@ -15,9 +34,9 @@ npm test
 npm run install:local -- ~/switchboard/.data
 ```
 
-The installer stages code outside the plugin watcher, replaces `.data/plugins/teams-web`, and saves the previous code under `.data/plugin-backups/`. It does not change connection records, encrypted credentials, or `.data/plugin-data/teams-web`. Reload or restart Switchboard after installing. Published versions are available on the repository’s GitHub Releases page.
+The installer stages code outside the plugin watcher, replaces `.data/plugins/teams-web`, and saves the previous code under `.data/plugin-backups/`. It does not change connection records, encrypted credentials, or `.data/plugin-data/teams-web`. Reload or restart Switchboard after installing. For stable installations, select the `plugins/teams` folder and **Latest release version**.
 
-In Switchboard, reconnect the existing Teams connection once (or add a new Teams connection). Choose Microsoft sign-in through local Chrome, or Import Teams tokens for a browser-free host (see below). For browser sign-in, enter your work email as the optional Microsoft work email hint. Complete sign-in in the dedicated browser window; it closes automatically when authentication finishes. `LOCAL-BROWSER` is only a placeholder in the connection dialog.
+In Switchboard, reconnect the existing Teams connection once (or add a new Teams connection). Choose Microsoft sign-in through local Chrome, or Import Teams tokens for a browser-free host (see below). For browser sign-in, enter your work email as the optional Microsoft work email hint. Complete sign-in in the dedicated browser window; it closes automatically when authentication finishes. The connection dialog shows browser sign-in instructions without a device code.
 
 Old DOM-only connections report `signin_required` until reconnected. Refresh chat/channel IDs by listing them again; exact legacy thread IDs can migrate after a membership check, but UI search, person and history cursors cannot. Existing send ledger entries remain preserved; a reused key with changed request semantics is rejected.
 
@@ -237,9 +256,3 @@ report truncation. Notes, spaces and system streams are excluded. An ended
 regional traversal does not establish a complete archive. Exact selected chats
 outside the automatic scan can resolve through current roster and metadata
 reads; newly discovered chats require a fresh roster check before message writes.
-
-## Releases
-
-Releases are managed by [release-please](https://github.com/googleapis/release-please). Use Conventional Commits (`fix:`, `feat:`, and `feat!:` for breaking changes). Pushes to `main` update a release pull request; merging it publishes a GitHub release and `v` tag. The package and plugin manifest versions are updated together. The workflow can also be run manually. Repository Actions settings must allow GitHub Actions to create pull requests.
-
-In Switchboard, install the repository root. The default tracks the latest stable release; choose a release to pin it, or a development branch to try unpublished changes.

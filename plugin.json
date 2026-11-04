@@ -1,15 +1,27 @@
 {
   "id": "teams-web",
   "name": "Teams",
-  "version": "0.12.0",
+  "version": "0.12.5",
   "main": "index.js",
-  "description": "Read and manage Teams chats and selected-message read state through direct APIs, using local browser sign-in or imported tokens.",
+  "description": "Teams chats, channels and message actions through direct APIs using shared Microsoft Authentication.",
   "icon": "icon.svg",
   "settings": [
     {
       "key": "browserPath",
       "label": "Chrome or Edge executable",
       "description": "Optional. Chrome and Edge are detected automatically on macOS. Used only for authentication."
+    },
+    {
+      "key": "maxResponseMiB",
+      "label": "Maximum API response size (MiB)",
+      "placeholder": "8",
+      "description": "Whole number from 1 to 256. Default 8. Large accounts may need more when connecting."
     }
-  ]
+  ],
+  "dependencies": [
+    "microsoft-authentication"
+  ],
+  "dependencyVersions": {
+    "microsoft-authentication": "^1.1.3"
+  }
 }
