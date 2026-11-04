@@ -24,7 +24,7 @@ const { createUser, createToken } = await load("server/users.ts"),
     "server/contracts/service.ts",
   );
 const cleanup = [],
-  f = await fixture({ after: (fn) => cleanup.push(fn) });
+  f = await fixture({ after: (fn) => cleanup.push(fn) }, "authentication-source");
 (await load("server/contracts/model.ts")).validateDefinition(
   f.service.contracts,
 );
@@ -63,7 +63,7 @@ for (const [key, access] of [
     key,
     user.id,
     "teams-web",
-    "tokens",
+    f.connection.methodId,
     key,
     encrypt({ access }),
     encrypt(f.connection.credentials),
@@ -97,6 +97,9 @@ try {
   const descriptor = await (
     await request(`/connections/${id}/contracts/v1`)
   ).json();
+  assert.equal(descriptor.operations.length, 5);
+  const discovery = await (await request("/contracts/v1/connections?category=messaging")).json();
+  assert.equal(discovery.connections[0].id, id);
   assert.deepEqual(descriptor.changes, { native: false, reconciliation: true });
   assert.equal((await request(`/connections/${ro}/contracts/v1`)).status, 403);
   assert.equal(

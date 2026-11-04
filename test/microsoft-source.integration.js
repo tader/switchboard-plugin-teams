@@ -80,6 +80,11 @@ test('Teams offers the same shared authentication picker as other Microsoft prod
   const connected = await method.connect({ config, connection: { credentials: { profile, authMode: 'browser' } } });
   assert.equal(connected.credentials.profile, profile);
   assert.equal(connected.credentials.authMode, 'microsoft');
+  const contracts=adapter.services[0].contracts;
+  const commonConnection={...connected,methodId:'authentication-source'};
+  assert.equal(contracts.available(commonConnection).length,4,'read-only Microsoft Authentication connection must be discoverable');
+  assert.equal(contracts.available({...commonConnection,config:{...connected.config,access:'write'}}).length,5);
+  assert.equal(contracts.watch,undefined,'capabilities must not claim native push');
   assert.deepEqual(connected.config, {...config,access:'read'});
   assert.equal(connected.account.id, `${tenant}:${oid}`);
   assert.equal(f.supplied[0].ref, config.authenticationSource);

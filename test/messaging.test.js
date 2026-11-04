@@ -167,3 +167,31 @@ test("read-only guards include raw writes; auth expiry is terminal and resource 
     (e) => e.code === "rate_limited" && e.retryAfterMs === 123000,
   );
 });
+
+for (const method of ["browser", "tokens", "authentication-source"]) {
+ test(`Messaging discovery and requests preserve access with ${method}`, async t => {
+  const f=await fixture(t,method), contract=f.service.contracts;
+  assert.equal(contract.available(f.connection).length,5);
+  const list=await call(f,"messaging.conversations.list",{});
+  assert.equal(list.items[0].kind,"direct");
+  const history=await call(f,"messaging.messages.list",{conversationId:chatId});
+  assert.equal(history.items[0].text,"Root");
+  const sent=await call(f,"messaging.messages.send",{conversationId:chatId,text:"source fixture"});
+  assert.equal(sent.status,"accepted");assert.equal(f.posts.length,1);
+  const read={...f.connection,config:{...f.connection.config,access:"read"}};
+  assert.equal(contract.available(read).length,4);
+  await assert.rejects(call(f,"messaging.messages.send",{conversationId:chatId,text:"blocked"},f.invocation(read)),{code:"permission_denied"});
+  await assert.rejects(f.invocation(read).request({method:"POST",url:"/chats/"+encodeURIComponent(chatId)+"/messages",body:"{}"}),{code:"permission_denied"});
+  assert.equal(f.posts.length,1);
+  f.expire(true);const before=f.requests.length;
+  await assert.rejects(contract.collect({},f.invocation()),e=>e.code==="authentication_required"&&e.reauthenticationRequired);
+  assert.equal(f.requests.length,before);
+ });
+}
+test("shared authentication requires its own credential mode and existing profile/identity", async t => {
+ const f=await fixture(t,"authentication-source"), available=f.service.contracts.available;
+ assert.deepEqual(available({...f.connection,credentials:{...f.connection.credentials,authMode:"tokens"}}),[]);
+ assert.deepEqual(available({...f.connection,credentials:{...f.connection.credentials,profile:null}}),[]);
+ assert.deepEqual(available({...f.connection,credentials:{...f.connection.credentials,identity:null}}),[]);
+ assert.deepEqual(available({...f.connection,methodId:"unknown"}),[]);
+});
