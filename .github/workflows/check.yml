@@ -34,3 +34,11 @@ jobs:
       - run: npm run integration:contracts
         env:
           SWITCHBOARD_ROOT: ${{ github.workspace }}/switchboard-contract-core
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          repository: tader/switchboard-plugin-microsoft
+          ref: 8b4e36ba8afa5751eee3b07fc074d8b26ac21ff2
+          path: microsoft-auth-dependency
+      - run: npm run integration:microsoft
+        env:
+          MICROSOFT_AUTH_ROOT: ${{ github.workspace }}/microsoft-auth-dependency

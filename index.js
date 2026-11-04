@@ -1,4 +1,5 @@
 import { createMessaging } from './lib/messaging.js';
+import { MicrosoftTeamsSession } from './lib/microsoft-session.js';
 import http from 'node:http';
 import fs from 'node:fs/promises';
 import path from 'node:path';
@@ -12,6 +13,7 @@ import { messageText, messageId, recipientEmail, reactionInput, peopleQuery, mes
 import { richContent } from './lib/content.js';
 import { openapi } from './lib/api-openapi.js';
 import { validateTokenBundle } from './lib/token-bundle.js';
+import { maxResponseMiB } from './lib/api-http.js';
 
 const capabilities = { ...apiCapabilities, supported: [...apiCapabilities.supported, 'triage_inbox', 'batch_reply_contexts', 'batch_chat_replies', 'quoted_chat_replies', 'channel_thread_reads', 'chat_mark_read', 'chat_mark_unread'],
   unsupported: apiCapabilities.unsupported.filter(name => !['quoted_replies', 'mark_unread'].includes(name)), triage: triageCapabilities };
@@ -55,8 +57,8 @@ function contentInput(input) {
 }
 
 export async function createAdapter(ctx, {
-  createSession = (profile, dir, settings) => new TeamsSession(profile, dir, settings),
-  createAPI = session => new TeamsAPI(session),
+  createSession = (profile, dir, settings) => new MicrosoftTeamsSession(ctx, profile, dir, settings),
+  createAPI = session => new TeamsAPI(session, { maxResponseMiB: maxResponseMiB(ctx.settings?.maxResponseMiB) }),
   createTriage = (api, ledger) => new TeamsTriage(api, ledger),
   createServer = handler => http.createServer(handler),
 } = {}) {
@@ -242,23 +244,25 @@ export async function createAdapter(ctx, {
     sessions.set(profile, entry);
   };
   const sharedAuth = {
-    async authorize(request, connection, { force = false } = {}) {
+    async authorize(request, connection, { force = false, signal, persistCredentials } = {}) {
       const { session } = get(connection.credentials.profile); session.adopt(connection.credentials);
       if(connection.config?.access==='read' && !['GET','HEAD'].includes(request.method) && !['/login','/triage/contexts','/search/messages/open'].includes(request.url.pathname))throw new AdapterError('permission_denied','This connection is read-only.',403);
+      session.sourceConfig = connection.config; session.persistCredentials = persistCredentials; session.signal = signal;
       const control = ['/status', '/diagnostics', '/capabilities', '/login'].includes(request.url.pathname);
-      if (!control && pending.has(session.profile)) throw new AdapterError('signin_pending', 'Complete the pending connection sign-in.', 503);
+      const renewStatus = request.url.pathname === '/status' && request.url.searchParams.get('renew') === 'true';
+      if ((!control || renewStatus) && pending.has(session.profile)) throw new AdapterError('signin_pending', 'Complete the pending connection sign-in.', 503);
       let authorizationError;
-      if (!control) {
+      if (!control || renewStatus) {
         const before = session.credentials;
         try {
-          await session.ensure(force);
+          await session.ensure(force || renewStatus);
           if (request.url.pathname === '/search/messages' || request.url.pathname === '/people' && !request.url.searchParams.get('query')?.includes('@')) await session.ensureSearch();
         }
         catch (error) {
           // Returning the rotated credentials lets Switchboard encrypt them before
           // our local adapter reports the failure. No data/write operation executes.
           if (session.credentials === before) throw error;
-          authorizationError = error instanceof AdapterError ? error : new AdapterError('authentication_failed', 'Teams authentication failed.', 503);
+          authorizationError = error instanceof AdapterError ? error : new AdapterError(error.reauthenticationRequired ? 'signin_required' : 'authentication_failed', 'Teams authentication failed.', 503);
         }
       }
       request.url.host = new URL(origin).host; request.url.protocol = 'http:';
@@ -276,13 +280,33 @@ export async function createAdapter(ctx, {
     },
   };
   return {
-    services: [{ id: 'teams-web', name: 'Teams', icon: 'icon.svg', description: 'Teams APIs with local browser sign-in or imported tokens.',
+    services: [{ id: 'teams-web', name: 'Teams', icon: 'icon.svg', description: 'Teams APIs using shared Microsoft Authentication.',
       contracts: createMessaging(ctx.dataDir),
       baseUrl: 'http://teams.localhost', allowedHosts: ['teams.localhost', new URL(origin).host], openapi,
-      authMethods: [{ id: 'browser', name: 'Microsoft sign-in through local Chrome',
+      authMethods: [{
+        id: 'authentication-source', name: 'Use Microsoft Authentication',
+        description: 'Use cached web credentials from this device or an explicitly shared authentication source on a peer.',
+        unavailable: ctx.credentials ? undefined : 'Upgrade Switchboard to enable authentication sources',
+        fields: [accessField, { key: 'authenticationSource', label: 'Authentication connection', type: 'credential-source', credentialFormat: 'microsoft/web-session/v1', required: true }],
+        credentialConsumer: { format: 'microsoft/web-session/v1', field: 'authenticationSource' },
+        async connect({ config, connection }) {
+          if (!ctx.credentials) throw new AdapterError('core_upgrade_required', 'Upgrade Switchboard to use authentication sources.', 503);
+          const profile = connection?.credentials?.profile ?? randomUUID();
+          const entry = entryFor(profile);
+          try {
+            const credentials = await entry.session.connectSource(config, connection?.credentials?.authMode === 'microsoft' ? connection.credentials : undefined);
+            await entry.api.directory(true);
+            await replaceEntry(profile, entry);
+            return { credentials, config: {...config,access:connectionAccess(config,connection)}, account: await ctx.require('microsoft-authentication').webSession.identify(credentials.microsoft) };
+          } catch (error) { await entry.session.close(); throw error; }
+        },
+        ...sharedAuth,
+      }, { hidden: true, unavailable: ctx.capabilities?.deviceBrowser ? undefined : 'Upgrade Switchboard to use browser sign-in.', id: 'browser', name: 'Microsoft sign-in through local Chrome',
         description: 'Sign in once in a dedicated local Chrome profile. Tokens are stored encrypted by Switchboard. Chrome closes after authentication; API calls renew tokens automatically when possible.',
         fields: [accessField, { key: 'label', label: 'Account label', required: true }, { key: 'loginHint', label: 'Microsoft work email', description: 'Optional account hint for sign-in.' }],
         async connect({ config, connection }) {
+          if (!ctx.capabilities?.deviceBrowser) throw new AdapterError('core_upgrade_required', 'Upgrade Switchboard to use browser sign-in.', 503);
+          const device = ctx.require('microsoft-authentication').webSession.browserAuthorization(900);
           const profile = connection?.credentials?.profile ?? randomUUID();
           const previousFlow = pending.get(profile);
           if (previousFlow) { await previousFlow.entry.session.close(); pending.delete(profile); }
@@ -296,7 +320,7 @@ export async function createAdapter(ctx, {
             await sessions.get(profile)?.session.queue;
             await session.login(loginHint);
           } catch (error) { pending.delete(profile); await session.close(); throw error; }
-          return { device: { userCode: 'LOCAL-BROWSER', verificationUri: 'https://login.microsoftonline.com/', expiresIn: 900, interval: 3 }, pending: { profile, expires, attempt } };
+          return { device, pending: { profile, expires, attempt } };
         },
         async poll({ pending: flow }) {
           const active = pending.get(flow.profile);
@@ -310,7 +334,7 @@ export async function createAdapter(ctx, {
         },
         ...sharedAuth,
       }, {
-        id: 'tokens', name: 'Import Teams tokens',
+        hidden: true, id: 'tokens', name: 'Import Teams tokens',
         description: 'Paste a bundle from auth:export. Refresh-capable bundles renew automatically over HTTP. Re-import when Microsoft requires fresh authentication. No browser is used here.',
         fields: [accessField, { key: 'label', label: 'Account label', required: true }, { key: 'tokenBundle', label: 'Teams token bundle (JSON)', type: 'secret', required: true }],
         async connect({ config, connection }) {

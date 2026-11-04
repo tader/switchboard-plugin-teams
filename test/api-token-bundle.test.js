@@ -60,7 +60,7 @@ test('failed and interrupted exports remove incomplete files and close the brows
   const controller = new AbortController(); closed = false;
   await assert.rejects(exportTokens({ out, signal: controller.signal }, { createAuthenticator: () => ({ async acquire() { controller.abort(); return signedBundle(); }, async close() { closed = true; } }) }), { name: 'AbortError' });
   assert.equal(closed, true); assert.deepEqual(await fs.readdir(directory), []);
-  const result = spawnSync(process.execPath, ['scripts/auth-export.js'], { encoding: 'utf8' });
+  const result = spawnSync(process.execPath, ['scripts/auth-export.js'], { encoding: 'utf8', cwd: new URL('..', import.meta.url) });
   assert.equal(result.status, 1); assert.match(result.stderr, /export_path_required/);
   assert.ok(!result.stderr.includes('private provider response'));
 });

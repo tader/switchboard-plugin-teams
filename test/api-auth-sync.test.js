@@ -121,9 +121,9 @@ test('cancellation during acquisition closes auth and prevents upload', async ()
 });
 
 test('CLI help needs no credentials and malformed arguments never echo secrets', () => {
-  const help = spawnSync(process.execPath, ['scripts/auth-sync.js', '--help'], { encoding: 'utf8' });
+  const help = spawnSync(process.execPath, ['scripts/auth-sync.js', '--help'], { encoding: 'utf8', cwd: new URL('..', import.meta.url) });
   assert.equal(help.status, 0); assert.match(help.stdout, /SWITCHBOARD_TOKEN/);
-  const invalid = spawnSync(process.execPath, ['scripts/auth-sync.js', '--token=private-secret'], { encoding: 'utf8' });
+  const invalid = spawnSync(process.execPath, ['scripts/auth-sync.js', '--token=private-secret'], { encoding: 'utf8', cwd: new URL('..', import.meta.url) });
   assert.equal(invalid.status, 1); assert.ok(!invalid.stderr.includes('private-secret'));
 });
 

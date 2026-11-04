@@ -1,6 +1,6 @@
 {
   "name": "switchboard-plugin-teams",
-  "version": "0.12.0",
+  "version": "0.12.5",
   "private": true,
   "type": "module",
   "engines": {
@@ -17,7 +17,8 @@
     "auth:export": "node scripts/auth-export.js",
     "auth:sync": "node scripts/auth-sync.js",
     "check:auth-refresh": "node scripts/auth-refresh-check.js",
-    "integration:contracts": "node scripts/contract-integration.js"
+    "integration:contracts": "node scripts/contract-integration.js",
+    "integration:microsoft": "node --test test/microsoft-source.integration.js"
   },
   "devDependencies": {
     "ajv": "^8.20.0"

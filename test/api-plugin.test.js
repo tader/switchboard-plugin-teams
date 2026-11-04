@@ -10,7 +10,7 @@ import { createAdapter } from '../index.js';
 import { TeamsSession, exchangeChatToken } from '../lib/api-auth.js';
 import { TeamsTriage, readStateProtocols } from '../lib/triage.js';
 import { TeamsAPI, messagePayload, encodeConversation } from '../lib/teams-api.js';
-import { requestJSON, chatOrigin, tokenClaims } from '../lib/api-http.js';
+import { requestJSON, chatOrigin, tokenClaims, maxResponseMiB } from '../lib/api-http.js';
 import { AdapterError } from '../lib/errors.js';
 import { encodeTokenBundle } from '../lib/token-bundle.js';
 import { signedBundle, signedToken, proprietaryToken, serverAccepts, renewal } from './token-fixture.js';
@@ -65,7 +65,7 @@ async function fixture(t, { forbidBrowser = false, dataDir, peerMessages = false
     if (/\/messages\/1(?:\/properties)?$/.test(url.pathname)) return new Response(null, { status: 204 });
     throw new Error('Unexpected test request: ' + url.pathname);
   };
-  const instance = await createAdapter({ dataDir: directory, settings: {} }, {
+  const instance = await createAdapter({ dataDir: directory, settings: {}, capabilities: { deviceBrowser: true }, require: () => ({ webSession: { browserAuthorization: expiresIn => ({ browser:true, expiresIn, interval:3 }) } }) }, {
     createSession(profile, dir, settings) {
       const session = new TeamsSession(profile, dir, settings, { fetcher, createAuthenticator: () => {
         if (forbidBrowser) throw new Error('A browser must never be created');
@@ -80,9 +80,12 @@ async function fixture(t, { forbidBrowser = false, dataDir, peerMessages = false
     },
   });
   t.after(async () => { await instance.dispose(); await fs.rm(directory, { recursive: true, force: true }); });
-  const auth = instance.services[0].authMethods[0];
+  const auth = instance.services[0].authMethods.find(method => method.id === 'browser');
   async function connect() {
     const flow = await auth.connect({ config: { label: 'Test', access:'write' } });
+    assert.equal(flow.device.browser, true);
+    assert.equal(flow.device.userCode, undefined);
+    assert.equal(flow.device.verificationUri, undefined);
     await sessions.get(flow.pending.profile).loginTask;
     return auth.poll({ pending: flow.pending });
   }
@@ -280,6 +283,47 @@ test('history cursors replay, remain account-bound and reject credential-exfiltr
   const follow = await f.call(connection, `/chats/${id}/history?limit=1&cursor=${malicious.body.nextCursor}`);
   assert.equal(follow.body.error.code, 'api_cursor_rejected');
   assert.ok(f.requests.every(request => request.url.hostname !== 'evil.example'));
+});
+
+test('response size limit is configurable', async () => {
+  const large = () => new Response(JSON.stringify({ value: 'x'.repeat(9 * 1024 * 1024) }));
+  await assert.rejects(requestJSON('https://teams.microsoft.com/test', {}, async () => large()), error => error.code === 'api_response_too_large' && error.message.includes('8 MiB'));
+  assert.equal((await requestJSON('https://teams.microsoft.com/test', { maxResponseMiB: 16 }, async (_url, options) => { assert.equal(options.maxResponseMiB, undefined); return large(); })).value.length, 9 * 1024 * 1024);
+  assert.deepEqual(['1', '256', '16', ' 32 ', undefined, '', '0', '257', '1.5', 'abc', 16, NaN, Infinity, -1, 1.5, null, {}, Symbol('limit')].map(maxResponseMiB), [1, 256, 16, 32, 8, 8, 8, 8, 8, 8, 16, 8, 8, 8, 8, 8, 8, 8]);
+  let seen;
+  const api = new TeamsAPI({ credentials: { region: 'emea', tokens: { chatsvcagg: { value: 't' } } } }, { maxResponseMiB: 16, fetcher: async () => { seen = true; return large(); } });
+  await assert.doesNotReject(api.request('csa', 'teams/users/me'));
+  assert.ok(seen);
+});
+
+test('response size cap rejects invalid limits and cancels oversized streams', async () => {
+  for (const limit of [Infinity, NaN, 257, 0, -1, 'invalid']) {
+    let cancelled = false;
+    const stream = new ReadableStream({
+      start(controller) { controller.enqueue(new Uint8Array(8 * 1024 * 1024 + 1)); },
+      cancel() { cancelled = true; },
+    });
+    await assert.rejects(requestJSON('https://teams.microsoft.com/test', { maxResponseMiB: limit }, async () => new Response(stream)),
+      error => error.code === 'api_response_too_large' && error.message.includes('8 MiB'));
+    assert.equal(cancelled, true);
+  }
+});
+
+test('response size cap counts chunks and allows exactly the configured limit', async () => {
+  const exact = '"' + 'x'.repeat(1024 * 1024 - 2) + '"';
+  assert.equal((await requestJSON('https://teams.microsoft.com/test', { maxResponseMiB: 1 }, async () => new Response(exact))).length, 1024 * 1024 - 2);
+  let cancelled = false;
+  const stream = new ReadableStream({
+    start(controller) {
+      controller.enqueue(new Uint8Array(512 * 1024));
+      controller.enqueue(new Uint8Array(512 * 1024));
+      controller.enqueue(new Uint8Array(1));
+    },
+    cancel() { cancelled = true; },
+  });
+  await assert.rejects(requestJSON('https://teams.microsoft.com/test', { maxResponseMiB: 1 }, async () => new Response(stream)),
+    error => error.code === 'api_response_too_large' && error.message.includes('1 MiB'));
+  assert.equal(cancelled, true);
 });
 
 test('transport redacts remote errors, rejects untrusted regional hosts, and formats content safely', async () => {
